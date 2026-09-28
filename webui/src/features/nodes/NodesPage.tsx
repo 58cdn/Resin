@@ -36,6 +36,8 @@ type NodeFilterDraft = {
   status: NodeStatusFilter;
 };
 
+type DebouncedTextFilters = Pick<NodeFilterDraft, "tag_keyword" | "egress_ip">;
+
 const defaultFilterDraft: NodeFilterDraft = {
   platform_id: "",
   subscription_id: "",
@@ -46,6 +48,8 @@ const defaultFilterDraft: NodeFilterDraft = {
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000, 5000] as const;
+// Node list requests are expensive on large pools; apply text filters once typing pauses.
+const TEXT_FILTER_DEBOUNCE_MS = 300;
 const EMPTY_PLATFORMS: Platform[] = [];
 const NODE_FILTER_ITEM_STYLE: CSSProperties = {
   flex: "1 1 120px",
@@ -178,6 +182,13 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
   };
 }
 
+function pickDebouncedTextFilters(draft: NodeFilterDraft): DebouncedTextFilters {
+  return {
+    tag_keyword: draft.tag_keyword.trim(),
+    egress_ip: draft.egress_ip.trim(),
+  };
+}
+
 function firstTag(node: { display_tag?: string; tags: { tag: string }[] }): string {
   if (node.display_tag && node.display_tag.trim()) {
     return node.display_tag;
@@ -264,8 +275,8 @@ export function NodesPage() {
   const { locale, t } = useI18n();
   const location = useLocation();
   const [draftFilters, setDraftFilters] = useState<NodeFilterDraft>(() => draftFromQuery(location.search));
-  const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
-    draftToActiveFilters(draftFromQuery(location.search))
+  const [debouncedTextFilters, setDebouncedTextFilters] = useState<DebouncedTextFilters>(() =>
+    pickDebouncedTextFilters(draftFromQuery(location.search))
   );
   const [sortBy, setSortBy] = useState<NodeSortBy>("tag");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
@@ -309,16 +320,36 @@ export function NodesPage() {
   });
   const subscriptions = subscriptionsQuery.data ?? [];
 
+  useEffect(() => {
+    const next = pickDebouncedTextFilters(draftFilters);
+    if (next.tag_keyword === debouncedTextFilters.tag_keyword && next.egress_ip === debouncedTextFilters.egress_ip) {
+      return;
+    }
+    const timeoutID = window.setTimeout(() => {
+      setDebouncedTextFilters(next);
+      setPage(0);
+    }, TEXT_FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutID);
+  }, [draftFilters, debouncedTextFilters]);
+
+  const activeFilters = useMemo(
+    () => draftToActiveFilters({ ...draftFilters, ...debouncedTextFilters }),
+    [draftFilters, debouncedTextFilters]
+  );
+
   const nodesQuery = useQuery({
     queryKey: ["nodes", activeFilters, sortBy, sortOrder, page, pageSize],
-    queryFn: () =>
-      listNodes({
-        ...activeFilters,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-        limit: pageSize,
-        offset: page * pageSize,
-      }),
+    queryFn: ({ signal }) =>
+      listNodes(
+        {
+          ...activeFilters,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          limit: pageSize,
+          offset: page * pageSize,
+        },
+        signal
+      ),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   });
@@ -486,19 +517,22 @@ export function NodesPage() {
   };
 
   const handleFilterChange = (key: keyof NodeFilterDraft, value: string) => {
-    setDraftFilters((prev) => {
-      const next = { ...prev, [key]: value };
-      setActiveFilters(draftToActiveFilters(next));
-      setSelectedNodeHash("");
-      setDrawerOpen(false);
-      setPage(0);
-      return next;
-    });
+    const next = { ...draftFilters, [key]: value };
+    setDraftFilters(next);
+    setSelectedNodeHash("");
+    setDrawerOpen(false);
+    if (key === "tag_keyword" || key === "egress_ip") {
+      // Applied by the debounce effect once typing pauses.
+      return;
+    }
+    // Selects apply immediately, together with any pending text edit.
+    setDebouncedTextFilters(pickDebouncedTextFilters(next));
+    setPage(0);
   };
 
   const resetFilters = () => {
     setDraftFilters(defaultFilterDraft);
-    setActiveFilters(draftToActiveFilters(defaultFilterDraft));
+    setDebouncedTextFilters(pickDebouncedTextFilters(defaultFilterDraft));
     setSelectedNodeHash("");
     setDrawerOpen(false);
     setPage(0);
