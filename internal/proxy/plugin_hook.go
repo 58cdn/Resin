@@ -82,15 +82,17 @@ func hookHeaders(h http.Header) map[string][]string {
 }
 
 // protectedHookHeaders cannot be changed by plugins because they are managed
-// by the HTTP transport or would break message framing.
+// by the HTTP transport, would break message framing, or carry credentials
+// for the upstream proxy chain.
 var protectedHookHeaders = map[string]bool{
-	"Host":              true,
-	"Content-Length":    true,
-	"Transfer-Encoding": true,
-	"Connection":        true,
-	"Upgrade":           true,
-	"Te":                true,
-	"Trailer":           true,
+	"Host":                true,
+	"Content-Length":      true,
+	"Transfer-Encoding":   true,
+	"Connection":          true,
+	"Upgrade":             true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Proxy-Authorization": true,
 }
 
 // IsProtectedHookHeader reports whether plugins may not modify the header.

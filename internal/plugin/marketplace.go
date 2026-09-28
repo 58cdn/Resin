@@ -167,8 +167,12 @@ func (m *Manager) fetchIndex(ctx context.Context, src string) (*Index, error) {
 		}
 		arts := ie.Artifacts[:0]
 		for _, a := range ie.Artifacts {
-			ref, err := url.Parse(strings.TrimSpace(a.URL))
-			if err != nil || a.URL == "" {
+			raw := strings.TrimSpace(a.URL)
+			if raw == "" {
+				continue
+			}
+			ref, err := url.Parse(raw)
+			if err != nil {
 				continue
 			}
 			abs := u.ResolveReference(ref)

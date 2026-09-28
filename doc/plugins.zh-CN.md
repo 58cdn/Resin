@@ -48,7 +48,7 @@
 
 - 包插件、上传和插件市场 **默认关闭**。
 - 插件进程 **不会** 继承 `RESIN_*` 环境变量（其中包含管理令牌和代理令牌），只会收到 `RESIN_PLUGIN_ID`、`RESIN_PLUGIN_DIR` 和 `RESIN_PLUGIN_DATA_DIR`。
-- `Proxy-Authorization` 永远不会传给插件。插件不能修改 `Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE` 或 `Trailer`。
+- `Proxy-Authorization` 永远不会传给插件。插件不能修改 `Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer` 或 `Proxy-Authorization`；非法的请求头名称或值会被忽略。
 - 事件中不包含请求/响应的正文或请求头。
 - 压缩包会检查路径穿越、绝对路径、链接以及大小限制（下载 100 MiB、解压后 512 MiB、4096 个条目）。插件市场的制品必须与其 `sha256` 匹配。
 - 展示插件市场 URL 时会隐去其中的凭据和查询字符串。

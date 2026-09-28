@@ -21,6 +21,7 @@ import (
 	"github.com/Resinat/Resin/internal/proxy"
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
+	"golang.org/x/net/http/httpguts"
 )
 
 const configureTimeout = 10 * time.Second
@@ -196,7 +197,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, e := range m.entries {
 		if !e.settings.Enabled {
-			e.setState(StatusStopped, e.loadErr)
+			if e.loadErr != "" {
+				e.setState(StatusError, e.loadErr)
+			} else {
+				e.setState(StatusStopped, "")
+			}
 			continue
 		}
 		wg.Add(1)
@@ -474,7 +479,7 @@ func appendHeaderOps(ops []proxy.HeaderOp, req *pluginsdk.RequestInfo, dec *plug
 	}
 	for _, name := range dec.RemoveHeaders {
 		key := http.CanonicalHeaderKey(strings.TrimSpace(name))
-		if key == "" || proxy.IsProtectedHookHeader(key) {
+		if !httpguts.ValidHeaderFieldName(key) || proxy.IsProtectedHookHeader(key) {
 			continue
 		}
 		delete(req.Headers, key)
@@ -487,17 +492,13 @@ func appendHeaderOps(ops []proxy.HeaderOp, req *pluginsdk.RequestInfo, dec *plug
 	sort.Strings(names)
 	for _, name := range names {
 		key := http.CanonicalHeaderKey(strings.TrimSpace(name))
-		if key == "" || proxy.IsProtectedHookHeader(key) || !validHeaderValue(dec.SetHeaders[name]) {
+		if !httpguts.ValidHeaderFieldName(key) || proxy.IsProtectedHookHeader(key) || !httpguts.ValidHeaderFieldValue(dec.SetHeaders[name]) {
 			continue
 		}
 		req.Headers[key] = []string{dec.SetHeaders[name]}
 		ops = append(ops, proxy.HeaderOp{Name: key, Value: dec.SetHeaders[name]})
 	}
 	return ops
-}
-
-func validHeaderValue(v string) bool {
-	return !strings.ContainsAny(v, "\r\n\x00")
 }
 
 // --- events ---

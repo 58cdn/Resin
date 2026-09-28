@@ -985,7 +985,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
 * 每个插件看到的 Platform、Account 与请求头包含更高优先级插件的修改。
 * 第一个 `reject` 终止链，返回 `PLUGIN_REJECTED`（见“代理错误处理”）。
 * 出错或超过 `timeout_ms` 时计入插件统计：开启 `fail_closed` 返回 `PLUGIN_ERROR`，否则跳过该插件。
-* 请求头修改仅作用于反向代理与普通 HTTP 正向代理（CONNECT 与 SOCKS5 无上游 HTTP 请求）。`Proxy-Authorization` 永远不会传给插件；`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer` 不允许修改。
+* 请求头修改仅作用于反向代理与普通 HTTP 正向代理（CONNECT 与 SOCKS5 无上游 HTTP 请求）。`Proxy-Authorization` 永远不会传给插件；`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer`、`Proxy-Authorization` 不允许修改，非法的请求头名称或值会被忽略。
 * 覆盖后的 Platform/Account 同时用于路由与请求日志。
 
 ### 事件投递

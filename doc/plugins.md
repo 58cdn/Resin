@@ -58,8 +58,9 @@ install plugins you trust.
   include the admin and proxy tokens). They receive only `RESIN_PLUGIN_ID`,
   `RESIN_PLUGIN_DIR` and `RESIN_PLUGIN_DATA_DIR`.
 - `Proxy-Authorization` is never passed to plugins. Plugins cannot modify
-  `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`
-  or `Trailer`.
+  `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`,
+  `Trailer` or `Proxy-Authorization`; invalid header names and values are
+  ignored.
 - Events never contain request/response bodies or headers.
 - Archives are checked for path traversal, absolute paths, links and size
   limits (100 MiB download, 512 MiB extracted, 4096 entries). Marketplace
