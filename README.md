@@ -303,6 +303,17 @@ If you are a developer and want AI to help modify an existing project for native
 
 ---
 
+## 🧩 Plugins
+
+Plugins extend Resin without forking it. A plugin can inspect every proxy request before routing (reject it, rewrite the Platform/Account, set or remove upstream headers) and subscribe to request and sticky-lease events.
+
+- **Builtin plugins**, available out of the box on the WebUI **Plugins** page: `resin.access-control` (allow/deny rules), `resin.header-rewrite` (upstream header rewriting) and `resin.webhook` (push events to your HTTP endpoint).
+- **Package plugins** are child processes written in any language that talk JSON-RPC over stdin/stdout. Install them by uploading a `.zip` / `.tar.gz`, by copying them into the plugin directory, or from a plugin marketplace (a static JSON index, set in `RESIN_PLUGIN_MARKETPLACE_URLS`). Package plugins run with Resin's privileges, so they stay off until you set `RESIN_EXTERNAL_PLUGINS_ENABLED=true`.
+
+See [doc/plugins.md](doc/plugins.md) for the protocol, manifest and marketplace format, and [examples/plugins](examples/plugins) for a Go rate limiter and a Python event exporter.
+
+---
+
 ## Other Deployment Options
 
 <details>

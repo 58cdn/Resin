@@ -8,6 +8,7 @@ import { NodesPage } from "../features/nodes/NodesPage";
 import { RequireAuth } from "../features/auth/RequireAuth";
 import { PlatformDetailPage } from "../features/platforms/PlatformDetailPage";
 import { PlatformPage } from "../features/platforms/PlatformPage";
+import { PluginsPage } from "../features/plugins/PluginsPage";
 import { RequestLogsPage } from "../features/requestLogs/RequestLogsPage";
 import { RulesPage } from "../features/rules/RulesPage";
 import { SubscriptionPage } from "../features/subscriptions/SubscriptionPage";
@@ -40,6 +41,7 @@ export function AppRoutes() {
         <Route path="/rules" element={<RulesPage />} />
         <Route path="/request-logs" element={<RequestLogsPage />} />
         <Route path="/resources" element={<GeoIPPage />} />
+        <Route path="/plugins" element={<PluginsPage />} />
         <Route path="/system-config" element={<SystemConfigPage />} />
       </Route>
 

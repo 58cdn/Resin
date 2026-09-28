@@ -13,6 +13,7 @@ import (
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/routing"
+	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
 // PlatformLookup provides read-only access to platforms.
@@ -34,6 +35,8 @@ type ReverseProxyConfig struct {
 	OutboundTransport OutboundTransportConfig
 	TransportPool     *OutboundTransportPool
 	ProxyBypassRules  []string
+	// Hooks, when set, runs request plugins before routing.
+	Hooks RequestHook
 }
 
 // ReverseProxy implements an HTTP reverse proxy.
@@ -52,6 +55,7 @@ type ReverseProxy struct {
 	directTransport   *http.Transport
 	directOnce        sync.Once
 	bypass            *TargetBypassMatcher
+	hooks             RequestHook
 }
 
 // NewReverseProxy creates a new reverse proxy handler.
@@ -77,6 +81,7 @@ func NewReverseProxy(cfg ReverseProxyConfig) *ReverseProxy {
 		transportConfig: transportCfg,
 		transportPool:   transportPool,
 		bypass:          NewTargetBypassMatcher(cfg.ProxyBypassRules),
+		hooks:           cfg.Hooks,
 	}
 }
 
@@ -295,6 +300,29 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lifecycle.setTarget(parsed.Host, target.String())
 
+	platformName := parsed.PlatformName
+	var headerOps []HeaderOp
+	if hookActive(p.hooks) {
+		res := p.hooks.InspectRequest(r.Context(), &pluginsdk.RequestInfo{
+			ProxyType:  pluginsdk.ProxyTypeReverse,
+			ClientIP:   lifecycle.log.ClientIP,
+			Platform:   platformName,
+			Account:    account,
+			TargetHost: parsed.Host,
+			Method:     r.Method,
+			URL:        target.String(),
+			Headers:    hookHeaders(r.Header),
+		})
+		if res.Reject != nil {
+			lifecycle.applyHookReject(res.Reject)
+			writePluginReject(w, res)
+			return
+		}
+		platformName, account = res.Platform, res.Account
+		lifecycle.setAccount(account)
+		headerOps = res.HeaderOps
+	}
+
 	var route routing.RouteResult
 	var hasRoute bool
 	var transport *http.Transport
@@ -303,7 +331,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.bypass != nil && p.bypass.ShouldBypass(parsed.Host) {
 		transport = p.directHTTPTransport()
 	} else {
-		routed, routeErr := resolveRoutedOutbound(p.router, p.pool, parsed.PlatformName, account, parsed.Host)
+		routed, routeErr := resolveRoutedOutbound(p.router, p.pool, platformName, account, parsed.Host)
 		if routeErr != nil {
 			lifecycle.setProxyError(routeErr)
 			lifecycle.setHTTPStatus(routeErr.HTTPCode)
@@ -325,6 +353,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL = target
 			req.Host = parsed.Host
 			stripForwardingIdentityHeaders(req.Header)
+			applyHeaderOps(req.Header, headerOps)
 			pendingEgressHeaderBytes = headerWireLen(req.Header)
 
 			// Compose request-progress trace first so egress commit logic can

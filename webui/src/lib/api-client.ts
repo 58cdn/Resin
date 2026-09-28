@@ -3,7 +3,7 @@ import { getStoredAuthToken } from "../features/auth/auth-store";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() ?? "";
 
 type Primitive = string | number | boolean | null;
-type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
 
 export type ApiErrorBody = {
   error?: {
@@ -28,6 +28,8 @@ export class ApiError extends Error {
 type RequestOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: JsonValue;
+  /** Binary request body sent as-is (e.g. a file upload); takes precedence over body. */
+  rawBody?: Blob;
   auth?: boolean;
   token?: string;
   signal?: AbortSignal;
@@ -54,10 +56,12 @@ async function parseErrorBody(response: Response): Promise<ApiErrorBody | null> 
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, auth = true, token, signal } = options;
+  const { method = "GET", body, rawBody, auth = true, token, signal } = options;
   const headers = new Headers();
 
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    headers.set("Content-Type", rawBody.type || "application/octet-stream");
+  } else if (body !== undefined) {
     headers.set("Content-Type", "application/json; charset=utf-8");
   }
 
@@ -71,7 +75,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const response = await fetch(buildURL(path), {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
     signal,
   });
 

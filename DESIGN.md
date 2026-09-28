@@ -174,6 +174,15 @@ URL 不允许包含查询部分与 ? 字符。
 | Account 匹配失败且策略为 REJECT | 403 Forbidden | `ACCOUNT_REJECTED` | 反向代理中 Account 提取/匹配失败，且该 Platform 的 `ReverseProxyMissAction` 配置为 `REJECT`。 |
 | 无可用节点（可路由集合为空） | 503 Service Unavailable | `NO_AVAILABLE_NODES` | Platform 的可路由节点池为空，无法分配节点。 |
 
+### 插件阶段错误
+
+插件请求钩子在认证通过之后、路由之前执行（见“插件系统”）。
+
+| 场景 | HTTP Code | X-Resin-Error | 说明 |
+|------|-----------|---------------|------|
+| 插件拒绝请求 | 插件指定（400-599，默认 403） | `PLUGIN_REJECTED` | Body 为插件返回的消息。响应附加 `X-Resin-Plugin: <plugin id>` 头。 |
+| 插件出错或超时且开启 `fail_closed` | 503 Service Unavailable | `PLUGIN_ERROR` | 响应附加 `X-Resin-Plugin: <plugin id>` 头。未开启 `fail_closed` 时跳过该插件继续处理。 |
+
 ### 上游连接/请求错误
 
 | 场景 | HTTP Code | X-Resin-Error | 说明 |
@@ -193,7 +202,8 @@ SOCKS5 正向代理只支持 SOCKS5 `CONNECT`。它使用标准 SOCKS5 / RFC1929
 | RFC1929 用户名密码认证失败 | 用户名密码子协商回复 `0x01 0x01` | `RESIN_PROXY_TOKEN` 非空时密码必须等于 `PROXY_TOKEN`。 |
 | 命令不是 `CONNECT` | SOCKS5 reply `REP=0x07` | 当前实现不支持 `BIND` / `UDP ASSOCIATE`。 |
 | 地址类型不支持 | SOCKS5 reply `REP=0x08` | 当前仅支持 IPv4 / IPv6 / 域名三类标准地址。 |
-| 路由失败、无可用节点、拨号失败、超时、向客户端写入成功回复失败 | SOCKS5 reply `REP=0x01` | 协议面统一暴露为 `GENERAL FAILURE`；更细粒度的 `resin_error` / `upstream_stage` 仅记录在请求日志中。 |
+| 插件拒绝请求 | SOCKS5 reply `REP=0x02` | `connection not allowed by ruleset`；`resin_error` 记录为 `PLUGIN_REJECTED`。 |
+| 路由失败、无可用节点、拨号失败、超时、插件出错且开启 `fail_closed`、向客户端写入成功回复失败 | SOCKS5 reply `REP=0x01` | 协议面统一暴露为 `GENERAL FAILURE`；更细粒度的 `resin_error` / `upstream_stage` 仅记录在请求日志中。 |
 | 成功建立隧道 | SOCKS5 reply `REP=0x00` | 回复成功后进入原始双向 TCP 隧道。 |
 
 ### 隧道型正向代理特殊行为
@@ -596,6 +606,7 @@ Resin 项目中所有的数据库都设计为单写，不会有多进程写入�
 * platforms(id PK, name UNIQUE, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, passive_circuit_breaker_disabled, updated_at_ns)
 * subscriptions(id PK, name, url, update_interval_ns, enabled, ephemeral, created_at_ns, updated_at_ns)
 * account_header_rules(url_prefix PK, headers_json, updated_at_ns)
+* plugins(id PK, enabled, priority, timeout_ms, fail_closed, config_json, created_at_ns, updated_at_ns)
 
 > 订阅的 LastCheck、LastError、LastUpdate 不进行持久化。因为启动时总是会更新一次。
 
@@ -944,7 +955,61 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
 * `metrics.db` 写失败只影响统计可见性，不影响代理主流程。
 
 
+## 插件系统
 
+插件用于在不修改 Resin 源码的前提下扩展功能：在请求链路中执行鉴权、改写与拦截，或订阅请求与租约事件对接外部系统。完整的协议、清单与插件市场格式见 [doc/plugins.zh-CN.md](doc/plugins.zh-CN.md)。
+
+### 插件类型
+* **内置插件（builtin）**：编译进 Resin、在进程内运行，始终可用，默认禁用。
+  * `resin.access-control`：按客户端 CIDR、平台、账号、目标主机、代理类型匹配的有序允许/拒绝规则。
+  * `resin.header-rewrite`：按规则设置/移除上游请求头，值支持 `${account}`、`${platform}`、`${client_ip}`、`${target_host}` 变量。
+  * `resin.webhook`：将事件批次 POST 到外部 HTTP 端点。
+* **插件包（package）**：由 Resin 启动的子进程，可用任意语言编写。仅当 `RESIN_EXTERNAL_PLUGINS_ENABLED=true` 时加载。
+
+不使用 Go 原生 `plugin` 包：它要求 CGO、与宿主完全一致的编译环境，且不支持 Windows，无法满足“开箱即用、跨平台单二进制”的原则。子进程 + 标准输入输出的方式对插件语言没有限制，插件崩溃也不会影响 Resin 主进程。
+
+### 插件能力
+* **请求钩子（request_hook）**：在代理认证之后、路由之前同步调用，可以拒绝请求、覆盖 Platform/Account，或设置/移除上游请求头。
+* **事件订阅（events）**：异步接收 `request.finished` 与 `lease.created|replaced|removed|expired` 事件，支持 `*` 与 `lease.*` 通配。
+
+插件实际生效的能力为清单声明与插件注册时回报能力的交集，插件只能收窄、不能扩大清单声明。
+
+### 插件协议
+* 插件包的 `plugin.json` 清单声明 id、版本、能力、配置字段 schema、各平台启动命令，以及可选的 `min_resin_version`。
+* Resin 与插件进程通过 stdin/stdout 交换 JSON-RPC 2.0 消息，每行一个 JSON 对象（NDJSON）；插件 stderr 输出写入 Resin 日志。
+* 方法：`plugin.register`（启动时下发配置）、`plugin.configure`（热更新配置）、`request.inspect`（请求钩子）、`event.batch`（事件批次）、`plugin.shutdown`（优雅退出）。
+* `pkg/pluginsdk` 提供协议类型和 `Serve` 帮助函数，仅依赖 Go 标准库；内置插件也实现同一套接口，与插件包共用同一套调度逻辑。
+
+### 请求钩子链
+* 已启用且具备请求钩子能力的插件按 `priority` 从高到低（相同时按 id）组成链，链以不可变快照形式通过原子指针发布。没有启用任何请求插件时，热路径的开销仅为一次原子读取。
+* 每个插件看到的 Platform、Account 与请求头包含更高优先级插件的修改。
+* 第一个 `reject` 终止链，返回 `PLUGIN_REJECTED`（见“代理错误处理”）。
+* 出错或超过 `timeout_ms` 时计入插件统计：开启 `fail_closed` 返回 `PLUGIN_ERROR`，否则跳过该插件。
+* 请求头修改仅作用于反向代理与普通 HTTP 正向代理（CONNECT 与 SOCKS5 无上游 HTTP 请求）。`Proxy-Authorization` 永远不会传给插件；`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer` 不允许修改。
+* 覆盖后的 Platform/Account 同时用于路由与请求日志。
+
+### 事件投递
+* 事件从请求日志与租约事件的发布点旁路产生，不阻塞代理。
+* 每个订阅插件有独立的有界队列（4096），按最多 256 条一批或每秒一次投递；队列满时丢弃新事件并计入 `events_dropped`。
+* 事件只包含元数据，不包含请求/响应正文或请求头。
+
+### 进程生命周期
+* 启动后必须在 10 秒内完成 `plugin.register`，否则视为启动失败。
+* 进程意外退出时按 1s 起、最大 30s 的指数退避自动重启，并以当前配置重新注册；稳定运行 30 秒后重置退避。重启期间的调用立即失败，按 `fail_closed` 处理。
+* 停止时先发送 `plugin.shutdown`，随后关闭 stdin，3 秒内未退出则强制结束。
+* 插件进程不继承 `RESIN_*` 环境变量（其中包含 Admin/Proxy Token），只额外获得 `RESIN_PLUGIN_ID`、`RESIN_PLUGIN_DIR`、`RESIN_PLUGIN_DATA_DIR`。工作目录为插件包目录。
+
+### 安装与插件市场
+* 插件包目录结构：`<RESIN_PLUGIN_DIR>/<id>/plugin.json`；插件私有数据目录：`<RESIN_PLUGIN_DIR>/.data/<id>`。
+* 安装来源：上传 `.zip` / `.tar.gz`、手动复制目录后重新扫描、从插件市场安装。
+* 压缩包解压时拒绝路径穿越、绝对路径、符号链接/硬链接与特殊文件，并限制条目数（4096）、解压总大小（512 MiB）、单文件大小（256 MiB）与下载大小（100 MiB）。
+* 升级时先解压到临时目录并校验清单，再替换旧版本；若插件已启用且新版本启动失败，自动回滚到旧版本。设置与数据目录保留。
+* 插件市场是静态 JSON 索引（可托管于 GitHub Pages 或对象存储），配置于 `RESIN_PLUGIN_MARKETPLACE_URLS`。每个条目按 `os`/`arch` 提供制品，制品 URL 可相对于索引 URL，`sha256` 必填且在解压前校验。多个索引包含同一 id 时以先配置者为准。
+* `min_resin_version` 高于当前 Resin 版本的插件包在市场中不可安装，上传/加载时被拒绝；开发构建（版本为 `dev`）跳过该检查。
+
+### 持久化
+* 每个插件的设置（`enabled`、`priority`、`timeout_ms`、`fail_closed`、`config`）保存在 `state.db` 的 `plugins` 表中，修改后热生效。
+* 新发现或新安装的插件默认禁用；卸载插件包会删除其文件、数据目录与设置。
 
 ## WebAPI
 ### 概览
@@ -2049,6 +2114,126 @@ API 阻塞到更新完成
 { "status": "ok" }
 ```
 
+### Plugins
+
+插件的设计见“插件系统”。未启用外部插件（`RESIN_EXTERNAL_PLUGINS_ENABLED=false`）时仅返回内置插件，插件包不会被加载。
+
+#### 插件对象
+
+```json
+{
+  "id": "resin.access-control",
+  "name": "Access Control",
+  "version": "1.0.0",
+  "description": "...",
+  "author": "Resin",
+  "homepage": "",
+  "license": "",
+  "source": "builtin",
+  "capabilities": { "request_hook": true },
+  "config_fields": [
+    { "name": "default_action", "label": "Default action", "type": "enum", "enum_values": ["allow", "deny"], "default": "allow" }
+  ],
+  "enabled": true,
+  "priority": 100,
+  "timeout_ms": 1000,
+  "fail_closed": false,
+  "config": { "default_action": "allow", "rules": [] },
+  "status": "running",
+  "last_error": "",
+  "stats": {
+    "requests": 1024,
+    "rejects": 3,
+    "errors": 0,
+    "timeouts": 0,
+    "avg_latency_us": 12,
+    "events_delivered": 0,
+    "events_dropped": 0,
+    "event_errors": 0,
+    "restarts": 0
+  },
+  "created_at": "2026-09-28T08:00:00Z",
+  "updated_at": "2026-09-28T08:00:00Z"
+}
+```
+
+* `source`：`builtin | package`。
+* `status`：`running | starting | stopped | error`；`error` 时 `last_error` 给出原因（如清单无效、启动失败、配置被拒绝）。
+* `stats`：自插件加载以来的累计计数，重启 Resin 后清零。
+
+#### 列出插件
+**GET** `/plugins`
+
+Query：`limit`、`offset`。按 id 排序。
+
+#### 获取插件
+**GET** `/plugins/{id}`
+
+#### 更新插件设置
+**PATCH** `/plugins/{id}`
+
+可修改字段：`enabled`、`priority`（-10000..10000）、`timeout_ms`（10..60000）、`fail_closed`、`config`。
+
+* `config` 必须是 JSON Object，整体替换原配置；按插件的 `config_fields` 校验并补全默认值后热应用到运行中的插件。
+* 字段越界、配置校验失败、插件拒绝新配置，或启用时启动失败，均返回 `400 INVALID_ARGUMENT`，设置保持不变。
+
+#### 卸载插件包
+**DELETE** `/plugins/{id}`
+
+停止插件并删除插件包目录、数据目录与设置。成功返回 `204`。内置插件返回 `409 CONFLICT`。
+
+#### 重新扫描插件目录
+**POST** `/plugins/actions/rescan`
+
+请求体：无。重新读取 `RESIN_PLUGIN_DIR`：加载新插件包，重启清单有变化的插件，移除已删除的插件，并重试启动失败的已启用插件。返回 `{ "items": [插件对象...], "total": N }`。
+
+#### 上传插件包
+**POST** `/plugins/actions/upload`
+
+请求体：`.zip` 或 `.tar.gz` 压缩包原始字节（不受 `RESIN_API_MAX_BODY_BYTES` 限制，最大 100 MiB）。成功返回 `201` 与插件对象。
+
+错误码映射（最小集）：
+* `400 INVALID_ARGUMENT`：压缩包无效、清单无效、不支持当前平台、要求更高版本的 Resin。
+* `409 CONFLICT`：未启用外部插件，或 id 与内置插件冲突。
+* `413 PAYLOAD_TOO_LARGE`：超过大小限制。
+
+#### 插件市场
+**GET** `/plugin-marketplace`
+
+拉取 `RESIN_PLUGIN_MARKETPLACE_URLS` 中的所有索引并标注本地安装状态：
+
+```json
+{
+  "sources": ["https://plugins.example.com/index.json"],
+  "plugins": [
+    {
+      "id": "example.rate-limit",
+      "name": "Rate Limit",
+      "version": "1.1.0",
+      "description": "...",
+      "tags": ["security"],
+      "min_resin_version": "1.0.0",
+      "artifacts": [ { "os": "linux", "arch": "amd64", "url": "...", "sha256": "..." } ],
+      "marketplace": "https://plugins.example.com/index.json",
+      "installed_version": "1.0.0",
+      "update_available": true,
+      "installable": true
+    }
+  ],
+  "errors": [ { "url": "https://broken.example.com/index.json", "error": "..." } ]
+}
+```
+
+* 单个索引拉取失败只出现在 `errors` 中，不影响其他索引。
+* `installable=false` 时 `reason` 说明原因（无当前平台制品、要求更高版本的 Resin、id 被内置插件占用）。
+* `sources` 与 `marketplace` 中的 URL 已隐去凭据与查询字符串。
+* 未启用外部插件时返回 `409 CONFLICT`。
+
+#### 从插件市场安装
+**POST** `/plugin-marketplace/{id}/actions/install`
+
+请求体：无。下载当前平台的制品，校验 `sha256` 后安装或升级。返回插件对象。未启用外部插件时返回 `409 CONFLICT`。
+
 ### 数据统计（用于 Dashboard）
 
 #### 目标
@@ -2366,6 +2551,11 @@ GeoIP 与订阅的下载都有错误重试的需求。
 * `RESIN_METRIC_LATENCY_BIN_WIDTH_MS`：延迟统计桶大小，默认 100ms。
 * `RESIN_METRIC_LATENCY_BIN_OVERFLOW_MS`：延迟统计溢出值，默认 3000ms。
 
+插件设置：
+* `RESIN_PLUGIN_DIR`：插件包目录。默认 `<RESIN_STATE_DIR>/plugins`。插件私有数据位于其下的 `.data/<id>`。
+* `RESIN_EXTERNAL_PLUGINS_ENABLED`：是否允许插件包（子进程）、上传与插件市场。默认 `false`；关闭时只运行内置插件。
+* `RESIN_PLUGIN_MARKETPLACE_URLS`：插件市场索引 URL 列表，用分号、逗号或换行分隔。默认空。
+
 ### 节点默认 DNS 解析链
 Resin 托管节点的默认域名解析使用 `RESIN_NODE_DNS_UPSTREAMS` 的环境变量默认值：
 1. `https://doh.pub/dns-query`
@@ -2432,6 +2622,7 @@ WebUI 分为登录态与控制台态。未登录时进入登录页；登录后�
 * 请求头规则
 * 请求日志
 * 资源
+* 插件
 * 系统配置
 
 页面左下角提供语言切换与退出登录入口。
@@ -2507,6 +2698,18 @@ WebUI 分为登录态与控制台态。未登录时进入登录页；登录后�
 页面分两块：
 * GeoIP 数据库状态：显示数据库更新时间与下次计划更新时间，支持刷新和“立即更新”。
 * 单 IP 查询：输入 IP 后查询地区并展示结果。
+
+## 插件
+页面顶部为 Tab：已安装 / 插件市场。未启用外部插件时显示提示条，说明当前仅运行内置插件以及开启方式；上传按钮禁用，插件市场 Tab 只显示该提示。
+
+已安装 Tab：工具栏包含上传插件（.zip / .tar.gz）、重新扫描、刷新。主体为插件卡片列表，每张卡片显示名称、版本、来源（内置/插件包）、能力、运行状态、优先级、是否故障时拒绝，以及请求、拒绝、错误、超时、平均耗时、事件投递、事件丢弃等统计。
+
+点击插件卡片打开插件 Drawer：
+* 插件信息：来源、能力、作者、许可证、主页、重启次数、事件错误。
+* 插件设置：启用开关、优先级、超时时间、故障时拒绝请求开关，以及按 `config_fields` 渲染的配置表单（未声明配置项的插件直接编辑 JSON 对象）。保存后插件以新配置热加载。
+* 运维操作：卸载插件（仅插件包）。
+
+插件市场 Tab：列出各市场源中的插件卡片（名称、版本、描述、标签、作者、许可证、最低 Resin 版本、市场源、主页），按安装状态显示“安装 / 更新到 vX / 重新安装 / 已安装 / 不可安装”，不可安装时显示原因。市场源拉取错误以提示条展示。
 
 ## 系统配置
 页面采用左右布局：

@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Resinat/Resin/internal/config"
+	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/internal/service"
 )
 
@@ -51,6 +52,9 @@ type systemEnvConfigResponse struct {
 	AdminTokenWeak                                  bool            `json:"admin_token_weak"`
 	ProxyTokenWeak                                  bool            `json:"proxy_token_weak"`
 	AuthVersion                                     string          `json:"auth_version"`
+	PluginDir                                       string          `json:"plugin_dir"`
+	ExternalPluginsEnabled                          bool            `json:"external_plugins_enabled"`
+	PluginMarketplaceURLs                           []string        `json:"plugin_marketplace_urls"`
 }
 
 // HandleSystemInfo returns a handler for GET /api/v1/system/info.
@@ -150,5 +154,16 @@ func systemEnvConfigSnapshot(envCfg *config.EnvConfig) *systemEnvConfigResponse 
 		AdminTokenWeak:                                  adminTokenSet && config.IsWeakToken(envCfg.AdminToken),
 		ProxyTokenWeak:                                  proxyTokenSet && config.IsWeakToken(envCfg.ProxyToken),
 		AuthVersion:                                     string(envCfg.AuthVersion),
+		PluginDir:                                       envCfg.PluginDir,
+		ExternalPluginsEnabled:                          envCfg.ExternalPluginsEnabled,
+		PluginMarketplaceURLs:                           redactedURLs(envCfg.PluginMarketplaceURLs),
 	}
+}
+
+func redactedURLs(urls []string) []string {
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, plugin.RedactURL(u))
+	}
+	return out
 }
