@@ -41,8 +41,14 @@ type SubscriptionResponse struct {
 }
 
 func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) SubscriptionResponse {
-	nodeCount := 0
-	healthyNodeCount := 0
+	resp := subToResponseWithoutNodeCounts(sub)
+	resp.NodeCount, resp.HealthyNodeCount = s.countSubscriptionNodes(sub)
+	return resp
+}
+
+// countSubscriptionNodes walks every managed node of sub (and looks each one up
+// in the pool when sub is enabled), which dominates the cost of a response.
+func (s *ControlPlaneService) countSubscriptionNodes(sub *subscription.Subscription) (nodeCount, healthyNodeCount int) {
 	var isHealthyAndEnabled func(*node.NodeEntry) bool
 	if sub.Enabled() && s != nil && s.Pool != nil {
 		isHealthyAndEnabled = s.Pool.MakeHealthyAndEnabledEvaluator()
@@ -62,7 +68,10 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 			return true
 		})
 	}
+	return nodeCount, healthyNodeCount
+}
 
+func subToResponseWithoutNodeCounts(sub *subscription.Subscription) SubscriptionResponse {
 	resp := SubscriptionResponse{
 		ID:                      sub.ID,
 		Name:                    sub.Name(),
@@ -70,8 +79,6 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 		URL:                     sub.URL(),
 		Content:                 sub.Content(),
 		UpdateInterval:          time.Duration(sub.UpdateIntervalNs()).String(),
-		NodeCount:               nodeCount,
-		HealthyNodeCount:        healthyNodeCount,
 		Ephemeral:               sub.Ephemeral(),
 		IncrementalAliveNodes:   sub.IncrementalAliveNodes(),
 		EphemeralNodeEvictDelay: time.Duration(sub.EphemeralNodeEvictDelayNs()).String(),
@@ -88,20 +95,35 @@ func (s *ControlPlaneService) subToResponse(sub *subscription.Subscription) Subs
 	return resp
 }
 
-// ListSubscriptions returns all subscriptions, optionally filtered by enabled.
-func (s *ControlPlaneService) ListSubscriptions(enabled *bool) ([]SubscriptionResponse, error) {
+// ListSubscriptionsWithoutNodeCounts returns all subscriptions, optionally
+// filtered by enabled, with NodeCount and HealthyNodeCount left at zero.
+// Counting walks every managed node, so list endpoints filter, sort and
+// paginate first and then call FillSubscriptionNodeCounts on the page only.
+func (s *ControlPlaneService) ListSubscriptionsWithoutNodeCounts(enabled *bool) ([]SubscriptionResponse, error) {
 	var result []SubscriptionResponse
 	s.SubMgr.Range(func(id string, sub *subscription.Subscription) bool {
 		if enabled != nil && sub.Enabled() != *enabled {
 			return true
 		}
-		result = append(result, s.subToResponse(sub))
+		result = append(result, subToResponseWithoutNodeCounts(sub))
 		return true
 	})
 	if result == nil {
 		result = []SubscriptionResponse{}
 	}
 	return result, nil
+}
+
+// FillSubscriptionNodeCounts sets NodeCount and HealthyNodeCount in place.
+// A subscription deleted since it was listed keeps zero counts.
+func (s *ControlPlaneService) FillSubscriptionNodeCounts(subs []SubscriptionResponse) {
+	for i := range subs {
+		sub := s.SubMgr.Lookup(subs[i].ID)
+		if sub == nil {
+			continue
+		}
+		subs[i].NodeCount, subs[i].HealthyNodeCount = s.countSubscriptionNodes(sub)
+	}
 }
 
 // GetSubscription returns a single subscription by ID.

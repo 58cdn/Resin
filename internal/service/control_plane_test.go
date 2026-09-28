@@ -723,6 +723,71 @@ func TestGetSubscription_HealthyNodeCount_ExcludesDisabledSubscriptionNodes(t *t
 	}
 }
 
+func TestFillSubscriptionNodeCounts_MatchesGetSubscription(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	healthyRaw := []byte(`{"type":"ss","server":"1.1.1.1","port":443}`)
+	healthyHash := node.HashFromRawOptions(healthyRaw)
+	pool.AddNodeFromSub(healthyHash, healthyRaw, sub.ID)
+	sub.ManagedNodes().StoreNode(healthyHash, subscription.ManagedNode{Tags: []string{"healthy"}})
+	entry, ok := pool.GetEntry(healthyHash)
+	if !ok {
+		t.Fatal("healthy entry missing")
+	}
+	outbound := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&outbound)
+	pool.RecordResult(healthyHash, true)
+
+	// Counted but not healthy: new nodes start circuit-open and this one has no outbound.
+	pendingRaw := []byte(`{"type":"ss","server":"2.2.2.2","port":443}`)
+	pendingHash := node.HashFromRawOptions(pendingRaw)
+	pool.AddNodeFromSub(pendingHash, pendingRaw, sub.ID)
+	sub.ManagedNodes().StoreNode(pendingHash, subscription.ManagedNode{Tags: []string{"pending"}})
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+	}
+
+	subs, err := cp.ListSubscriptionsWithoutNodeCounts(nil)
+	if err != nil {
+		t.Fatalf("ListSubscriptionsWithoutNodeCounts: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("subscriptions = %d, want 1", len(subs))
+	}
+	if subs[0].NodeCount != 0 || subs[0].HealthyNodeCount != 0 {
+		t.Fatalf("counts before fill = %d/%d, want 0/0", subs[0].NodeCount, subs[0].HealthyNodeCount)
+	}
+
+	// A subscription deleted after it was listed keeps zero counts.
+	subs = append(subs, SubscriptionResponse{ID: "sub-deleted", Name: "sub-deleted"})
+	cp.FillSubscriptionNodeCounts(subs)
+
+	if subs[0].NodeCount != 2 || subs[0].HealthyNodeCount != 1 {
+		t.Fatalf("counts after fill = %d/%d, want 2/1", subs[0].NodeCount, subs[0].HealthyNodeCount)
+	}
+	want, err := cp.GetSubscription(sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if !reflect.DeepEqual(subs[0], *want) {
+		t.Fatalf("filled response = %+v, want %+v", subs[0], *want)
+	}
+	if subs[1].NodeCount != 0 || subs[1].HealthyNodeCount != 0 {
+		t.Fatalf("deleted subscription counts = %d/%d, want 0/0", subs[1].NodeCount, subs[1].HealthyNodeCount)
+	}
+}
+
 func TestListPlatforms_FailsFastOnCorruptPersistedFiltersJSON(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "state")
