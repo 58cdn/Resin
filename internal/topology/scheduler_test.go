@@ -970,6 +970,85 @@ func TestScheduler_ForceRefreshAll_LimitsConcurrentUpdates(t *testing.T) {
 	}
 }
 
+func TestScheduler_TickSkipsSubscriptionsClaimedByForceRefreshAll(t *testing.T) {
+	oldMaxProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(oldMaxProcs)
+
+	subMgr := NewSubscriptionManager()
+	// LastCheckedNs is zero after startup, so both look due to tick while the
+	// startup ForceRefreshAll is still running (one in flight, one queued).
+	for i := 0; i < 2; i++ {
+		sub := subscription.NewSubscription(
+			fmt.Sprintf("s%d", i),
+			fmt.Sprintf("Sub-%d", i),
+			fmt.Sprintf("http://example.com/%d", i),
+			true,
+			false,
+		)
+		sub.SetFetchConfig(sub.URL(), int64(time.Hour))
+		subMgr.Register(sub)
+	}
+
+	pool := newTestPool(subMgr)
+	releaseFetch := make(chan struct{})
+	firstStarted := make(chan struct{})
+	var calls atomic.Int32
+	fetcher := func(url string) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+		}
+		<-releaseFetch
+		return makeSubscriptionJSON(), nil
+	}
+	sched := newTestScheduler(subMgr, pool, fetcher)
+
+	forceDone := make(chan struct{})
+	go func() {
+		sched.ForceRefreshAll()
+		close(forceDone)
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("ForceRefreshAll did not start")
+	}
+
+	tickDone := make(chan struct{})
+	go func() {
+		sched.tick()
+		close(tickDone)
+	}()
+	select {
+	case <-tickDone:
+	case <-time.After(time.Second):
+		t.Fatal("tick should skip claimed subscriptions instead of waiting on them")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("tick must not refetch claimed subscriptions, fetch calls=%d", got)
+	}
+
+	close(releaseFetch)
+	select {
+	case <-forceDone:
+	case <-time.After(time.Second):
+		t.Fatal("ForceRefreshAll did not finish after releasing fetchers")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected exactly one fetch per subscription, got %d", got)
+	}
+
+	// Claims are released once the batch finishes.
+	subMgr.Range(func(_ string, sub *subscription.Subscription) bool {
+		sub.LastCheckedNs.Store(0)
+		return true
+	})
+	sched.tick()
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("expected tick to refresh released subscriptions, fetch calls=%d", got)
+	}
+}
+
 func TestScheduler_ForceRefreshAll_AfterStopDoesNotFetch(t *testing.T) {
 	subMgr := NewSubscriptionManager()
 	sub := subscription.NewSubscription("s1", "One", "http://example.com/one", true, false)
