@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -280,5 +282,70 @@ func TestHandleListNodes_EnabledFilter(t *testing.T) {
 	body = decodeJSONMap(t, rec)
 	if body["total"] != float64(1) {
 		t.Fatalf("enabled=false total: got %v, want 1", body["total"])
+	}
+}
+
+func TestHandleListNodes_SortsAndPaginates(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	failureCounts := map[string]int32{"node-a": 2, "node-b": 0, "node-c": 1}
+	for i, tag := range []string{"node-c", "node-a", "node-b"} {
+		raw := fmt.Sprintf(`{"type":"ss","server":"10.0.0.%d","port":443}`, i+1)
+		addNodeForNodeListTestWithTag(t, cp, sub, raw, "", tag)
+		entry, ok := cp.Pool.GetEntry(node.HashFromRawOptions([]byte(raw)))
+		if !ok {
+			t.Fatalf("node %s missing after add", tag)
+		}
+		entry.FailureCount.Store(failureCounts[tag])
+	}
+
+	cases := []struct {
+		query      string
+		wantTags   []string
+		wantLimit  float64
+		wantOffset float64
+	}{
+		{"&limit=2", []string{"sub-a/node-a", "sub-a/node-b"}, 2, 0},
+		{"&sort_by=tag&sort_order=desc&limit=2&offset=1", []string{"sub-a/node-b", "sub-a/node-a"}, 2, 1},
+		{"&sort_by=failure_count", []string{"sub-a/node-b", "sub-a/node-c", "sub-a/node-a"}, 50, 0},
+		{"&sort_by=failure_count&sort_order=DESC&offset=2", []string{"sub-a/node-b"}, 50, 2},
+		{"&offset=10", []string{}, 50, 10},
+	}
+	for _, tc := range cases {
+		rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+sub.ID+tc.query, nil, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list nodes %q status: got %d, want %d, body=%s", tc.query, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		body := decodeJSONMap(t, rec)
+		items, ok := body["items"].([]any)
+		if !ok {
+			t.Fatalf("list nodes %q items: got %T, want array", tc.query, body["items"])
+		}
+		tags := []string{}
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			tag, _ := item["display_tag"].(string)
+			tags = append(tags, tag)
+		}
+		if !slices.Equal(tags, tc.wantTags) {
+			t.Fatalf("list nodes %q tags: got %v, want %v", tc.query, tags, tc.wantTags)
+		}
+		if body["total"] != float64(3) || body["limit"] != tc.wantLimit || body["offset"] != tc.wantOffset {
+			t.Fatalf(
+				"list nodes %q page: got total=%v limit=%v offset=%v, want total=3 limit=%v offset=%v",
+				tc.query, body["total"], body["limit"], body["offset"], tc.wantLimit, tc.wantOffset,
+			)
+		}
+	}
+
+	for _, query := range []string{"&sort_by=bogus", "&sort_order=sideways", "&limit=-1", "&offset=x"} {
+		rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+sub.ID+query, nil, true)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("list nodes %q status: got %d, want %d, body=%s", query, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		assertErrorCode(t, rec, "INVALID_ARGUMENT")
 	}
 }
