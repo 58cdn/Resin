@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -32,6 +33,10 @@ import (
 //	crash_once    exit without replying to the first request ever made
 //	slow          sleep 400ms before answering requests for account "slow"
 //	bad_register  fail plugin.register (Configure always errors)
+//	stall         answer plugin.register, then never read stdin again
+//	orphan        on the first request ever made, start a child that inherits
+//	              stdout and stderr, then exit without replying
+//	sleep         sleep for a while (the orphaned child)
 func TestMain(m *testing.M) {
 	if os.Getenv("GO_WANT_HELPER_PLUGIN") == "1" {
 		tmRunHelperPlugin()
@@ -82,12 +87,57 @@ type tmHelperPlugin struct {
 }
 
 func tmRunHelperPlugin() {
-	p := &tmHelperPlugin{mode: os.Getenv("HELPER_MODE")}
+	mode := os.Getenv("HELPER_MODE")
+	switch mode {
+	case "stall":
+		tmServeStalled()
+	case "sleep":
+		// Bounded, so a leaked child never outlives the test run for long.
+		time.Sleep(20 * time.Second)
+		os.Exit(0)
+	}
+	p := &tmHelperPlugin{mode: mode}
 	if err := pluginsdk.Serve(p); err != nil {
 		fmt.Fprintln(os.Stderr, "helper plugin:", err)
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+// tmServeStalled answers plugin.register and then stops reading stdin, like
+// a plugin wedged in a long synchronous call.
+func tmServeStalled() {
+	line, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+	if err != nil {
+		os.Exit(2)
+	}
+	var msg pluginsdk.Message
+	if err := json.Unmarshal(line, &msg); err != nil {
+		os.Exit(2)
+	}
+	result, _ := json.Marshal(pluginsdk.RegisterResult{SchemaVersion: pluginsdk.SchemaVersion})
+	reply, _ := json.Marshal(pluginsdk.Message{JSONRPC: "2.0", ID: msg.ID, Result: result})
+	_, _ = os.Stdout.Write(append(reply, '\n'))
+	time.Sleep(20 * time.Second)
+	os.Exit(0)
+}
+
+// orphanAndExit starts a copy of the helper that inherits stdout and stderr
+// (like a plugin that spawns a daemon), records its pid and exits.
+func (p *tmHelperPlugin) orphanAndExit() {
+	exe, err := os.Executable()
+	if err != nil {
+		os.Exit(4)
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), "HELPER_MODE=sleep")
+	cmd.Dir = os.TempDir() // keeps the package directory removable
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(4)
+	}
+	_ = os.WriteFile(p.dataFile("orphan.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
+	os.Exit(3)
 }
 
 func (p *tmHelperPlugin) Init(_ context.Context, params pluginsdk.RegisterParams) error {
@@ -133,6 +183,10 @@ func (p *tmHelperPlugin) InspectRequest(_ context.Context, req *pluginsdk.Reques
 		}
 	case p.mode == "slow" && req.Account == "slow":
 		time.Sleep(400 * time.Millisecond)
+	case p.mode == "orphan":
+		if _, err := os.Stat(p.dataFile("orphan.pid")); err != nil {
+			p.orphanAndExit()
+		}
 	}
 	p.mu.Lock()
 	msg, reg := p.msg, p.reg
@@ -676,6 +730,99 @@ func TestProcessInspectTimeout(t *testing.T) {
 	st := tmGet(t, p.m, tmProcID).Stats
 	if st.Requests != 3 || st.Timeouts != 2 || st.Errors != 0 || st.Rejects != 1 || st.Restarts != 0 {
 		t.Fatalf("stats = %+v", st)
+	}
+}
+
+// A plugin that stops reading stdin must not block callers beyond their
+// context, even once the pipe and the write queue are full.
+func TestProcessStalledStdinDoesNotBlockCalls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns plugin processes; skipped in -short mode")
+	}
+	mf := tmHelperManifest(t, "stall")
+	dir := t.TempDir()
+	spec := processSpec{
+		ID:       tmProcID,
+		Dir:      dir,
+		DataDir:  filepath.Join(dir, "data"),
+		Runtime:  mf.Runtimes[pluginsdk.RuntimeAny],
+		Declared: mf.Capabilities,
+		Logf:     tmLogf(t),
+	}
+	p, err := startProcess(context.Background(), spec, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("startProcess: %v", err)
+	}
+	t.Cleanup(func() {
+		if c, err := p.current(); err == nil {
+			c.kill()
+		}
+		_ = p.Close(context.Background())
+	})
+
+	req := tmRequest()
+	req.URL = "https://example.com/" + strings.Repeat("x", 16<<10)
+	const calls = processWriteQueue + 64
+	errs := make(chan error, calls)
+	start := time.Now()
+	for range calls {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			_, err := p.Inspect(ctx, req)
+			errs <- err
+		}()
+	}
+	deadline := time.After(5 * time.Second)
+	for i := range calls {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("call err = %v, want context.DeadlineExceeded", err)
+			}
+		case <-deadline:
+			t.Fatalf("%d of %d calls still blocked after %v", calls-i, calls, time.Since(start))
+		}
+	}
+}
+
+// A descendant holding the inherited stdout/stderr must not hide the exit of
+// the plugin process itself.
+func TestProcessExitWithInheritedPipes(t *testing.T) {
+	p := tmProcSetup(t, "orphan", nil)
+	tmEnable(t, p.m, tmProcID, Update{TimeoutMs: tmPtr(5000)})
+	pidFile := filepath.Join(p.dataDir, "orphan.pid")
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(string(raw))
+		if err != nil {
+			return
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+			_ = proc.Release()
+		}
+	})
+
+	start := time.Now()
+	if res := p.inspect("acct"); res.Reject != nil {
+		t.Fatalf("exited plugin with fail-open = %+v", res)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("pending call failed after %v, want soon after the process exited", elapsed)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("orphan was not started: %v", err)
+	}
+	tmWaitFor(t, 5*time.Second, "automatic restart while the orphan holds the pipes", func() bool {
+		got := tmGet(t, p.m, tmProcID)
+		return got.Stats.Restarts == 1 && got.Status == StatusRunning
+	})
+	if echo := tmDecodeEcho(t, p.inspect("acct")); echo.Msg != "default" {
+		t.Fatalf("restarted process echo = %+v", echo)
 	}
 }
 

@@ -120,6 +120,9 @@ type RequestInfo struct {
 	Method     string              `json:"method,omitempty"`
 	URL        string              `json:"url,omitempty"`
 	Headers    map[string][]string `json:"headers,omitempty"`
+	// TimeoutMs is the host's deadline for this call in milliseconds. The
+	// SDK cancels the InspectRequest context when it passes.
+	TimeoutMs int64 `json:"timeout_ms,omitempty"`
 }
 
 // RequestDecision is the result of request.inspect. The zero value means

@@ -284,10 +284,11 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	account, _, extractionFailed := p.resolveReverseProxyAccount(parsed, r, behaviorPlatform)
 	lifecycle.setAccount(account)
 
-	if shouldRejectReverseProxyAccountExtractionFailure(extractionFailed, behaviorPlatform) {
-		lifecycle.setProxyError(ErrAccountRejected)
-		lifecycle.setHTTPStatus(ErrAccountRejected.HTTPCode)
-		writeProxyError(w, ErrAccountRejected)
+	// Request plugins may change the platform and account, so with plugins
+	// the miss action is applied to the final ones, after the hook.
+	hooked := hookActive(p.hooks)
+	if !hooked && shouldRejectReverseProxyAccountExtractionFailure(extractionFailed, behaviorPlatform) {
+		writeAccountRejected(lifecycle, w)
 		return
 	}
 
@@ -302,24 +303,43 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	platformName := parsed.PlatformName
 	var headerOps []HeaderOp
-	if hookActive(p.hooks) {
+	if hooked {
 		res := p.hooks.InspectRequest(r.Context(), &pluginsdk.RequestInfo{
 			ProxyType:  pluginsdk.ProxyTypeReverse,
 			ClientIP:   lifecycle.log.ClientIP,
-			Platform:   platformName,
+			Platform:   hookPlatform(platformName),
 			Account:    account,
 			TargetHost: parsed.Host,
 			Method:     r.Method,
-			URL:        target.String(),
+			URL:        lifecycle.log.TargetURL,
 			Headers:    hookHeaders(r.Header),
 		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
 		if res.Reject != nil {
 			lifecycle.applyHookReject(res.Reject)
 			writePluginReject(w, res)
 			return
 		}
-		platformName, account = res.Platform, res.Account
+		if res.Platform != hookPlatform(platformName) {
+			platformName = res.Platform
+			if res.Account == "" {
+				// Without an account, the extraction rules and miss
+				// action of the new platform apply.
+				if plat := p.resolvePlatformForAccountBehavior(platformName); !samePlatform(plat, behaviorPlatform) {
+					behaviorPlatform = plat
+					res.Account, _, extractionFailed = p.resolveReverseProxyAccount(parsed, r, plat)
+				}
+			}
+		}
+		account = res.Account
 		lifecycle.setAccount(account)
+		if account == "" && shouldRejectReverseProxyAccountExtractionFailure(extractionFailed, behaviorPlatform) {
+			writeAccountRejected(lifecycle, w)
+			return
+		}
 		headerOps = res.HeaderOps
 	}
 
@@ -349,7 +369,11 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
+		// Rewrite runs after the hop-by-hop headers were removed, so the
+		// client cannot drop plugin headers by naming them in Connection,
+		// and it never adds X-Forwarded-For, whatever the plugins do to it.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			req := pr.Out
 			req.URL = target
 			req.Host = parsed.Host
 			stripForwardingIdentityHeaders(req.Header)
@@ -542,6 +566,19 @@ func behaviorRequiresAccountExtraction(behavior platform.ReverseProxyEmptyAccoun
 	default:
 		return false
 	}
+}
+
+func samePlatform(a, b *platform.Platform) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ID == b.ID
+}
+
+func writeAccountRejected(lifecycle *requestLifecycle, w http.ResponseWriter) {
+	lifecycle.setProxyError(ErrAccountRejected)
+	lifecycle.setHTTPStatus(ErrAccountRejected.HTTPCode)
+	writeProxyError(w, ErrAccountRejected)
 }
 
 func shouldRejectReverseProxyAccountExtractionFailure(

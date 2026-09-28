@@ -2,6 +2,7 @@ package pluginsdk
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -300,6 +301,57 @@ func TestManifestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestManifestApplyConfigDefaults(t *testing.T) {
+	m := &Manifest{ConfigFields: []ConfigField{
+		{Name: "url", Type: FieldString, Required: true, Default: json.RawMessage(`"http://default"`)},
+		{Name: "limit", Type: FieldInteger, Default: json.RawMessage(`10`)},
+		{Name: "token", Type: FieldSecret},
+	}}
+	tests := []struct {
+		name   string
+		config string
+		want   map[string]any
+	}{
+		{"empty input", ``, map[string]any{"url": "http://default", "limit": float64(10)}},
+		{"missing keys", `{}`, map[string]any{"url": "http://default", "limit": float64(10)}},
+		{"null keys", `{"url":null,"limit":null}`, map[string]any{"url": "http://default", "limit": float64(10)}},
+		{"set keys are kept", `{"url":"http://x","limit":0,"token":"t"}`, map[string]any{"url": "http://x", "limit": float64(0), "token": "t"}},
+		{"undeclared keys are kept", `{"extra":[1]}`, map[string]any{"url": "http://default", "limit": float64(10), "extra": []any{float64(1)}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := m.ApplyConfigDefaults(json.RawMessage(tc.config))
+			if err != nil {
+				t.Fatalf("ApplyConfigDefaults: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("result %s is not a JSON object: %v", out, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ApplyConfigDefaults(%s) = %s, want %v", tc.config, out, tc.want)
+			}
+			// A required field with a default is satisfied once defaults apply.
+			if err := m.ValidateConfig(out); err != nil {
+				t.Fatalf("ValidateConfig(%s): %v", out, err)
+			}
+		})
+	}
+
+	for _, bad := range []string{`[1]`, `null`, `"x"`, `{"url":`} {
+		if _, err := m.ApplyConfigDefaults(json.RawMessage(bad)); err == nil {
+			t.Errorf("ApplyConfigDefaults(%s) accepted a non-object", bad)
+		}
+	}
+
+	// Nothing to fill in: the input is returned as is.
+	in := json.RawMessage(`{"url":"http://x", "limit":1}`)
+	out, err := m.ApplyConfigDefaults(in)
+	if err != nil || string(out) != string(in) {
+		t.Fatalf("ApplyConfigDefaults(%s) = %s, %v; want input unchanged", in, out, err)
+	}
+}
+
 func TestValidateConfigFields(t *testing.T) {
 	fields := []ConfigField{
 		{Name: "s", Type: FieldString},
@@ -428,8 +480,8 @@ func TestMatchEvent(t *testing.T) {
 
 func TestKnownEventTypesAreValidPatterns(t *testing.T) {
 	for _, ev := range KnownEventTypes {
-		if !validEventPattern(ev) {
-			t.Errorf("known event type %q rejected by validEventPattern", ev)
+		if !ValidEventPattern(ev) {
+			t.Errorf("known event type %q rejected by ValidEventPattern", ev)
 		}
 		if !MatchEvent([]string{ev}, ev) {
 			t.Errorf("MatchEvent does not match %q exactly", ev)

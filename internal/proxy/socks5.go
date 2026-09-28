@@ -127,12 +127,18 @@ func (s *Socks5Inbound) ServeConnContext(baseCtx context.Context, conn net.Conn)
 			ProxyType:  pluginsdk.ProxyTypeSocks5,
 			IsConnect:  true,
 			ClientIP:   lifecycle.log.ClientIP,
-			Platform:   handshake.platformName,
+			Platform:   hookPlatform(handshake.platformName),
 			Account:    handshake.account,
 			TargetHost: handshake.target,
 		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
 		if res.Reject != nil {
-			lifecycle.applyHookReject(res.Reject)
+			// SOCKS5 has no HTTP status; the reply code carries the outcome.
+			lifecycle.setProxyError(res.Reject)
+			lifecycle.setNetOK(false)
 			reply := byte(socks5ReplyNotAllowed)
 			if res.Reject.ResinError == ErrPluginUnavailable.ResinError {
 				reply = socks5ReplyGeneralFailure
@@ -140,7 +146,10 @@ func (s *Socks5Inbound) ServeConnContext(baseCtx context.Context, conn net.Conn)
 			_ = writeSocks5Reply(conn, reply, nil)
 			return
 		}
-		handshake.platformName, handshake.account = res.Platform, res.Account
+		if res.Platform != hookPlatform(handshake.platformName) {
+			handshake.platformName = res.Platform
+		}
+		handshake.account = res.Account
 		lifecycle.setAccount(handshake.account)
 	}
 

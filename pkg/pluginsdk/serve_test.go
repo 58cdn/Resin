@@ -745,3 +745,274 @@ func TestServeIOStreaming(t *testing.T) {
 		t.Fatalf("Shutdown called %d times, want 1", p.shutdowns)
 	}
 }
+
+// tsBlockingPlugin blocks inspect and event calls until their context ends.
+// Inspect calls for TargetHost "fast" return immediately.
+type tsBlockingPlugin struct {
+	tsConfigOnly
+}
+
+func (p *tsBlockingPlugin) InspectRequest(ctx context.Context, req *RequestInfo) (*RequestDecision, error) {
+	if req.TargetHost == "fast" {
+		return Continue(), nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *tsBlockingPlugin) HandleEvents(ctx context.Context, _ []Event) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func tsIndexOf(msgs []Message, pred func(Message) bool) int {
+	for i, m := range msgs {
+		if pred(m) {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestServeIOEventQueueFullDoesNotBlockReader(t *testing.T) {
+	p := &tsBlockingPlugin{}
+	lines := []string{tsRegister(t, 0, map[string]any{})}
+	// One batch is being handled and eventQueueSize more can wait; the
+	// remaining ones are refused instead of stalling the reader.
+	const extra = 3
+	total := eventQueueSize + 1 + extra
+	for i := 1; i <= total; i++ {
+		lines = append(lines, tsLine(t, i, MethodEventBatch, EventBatchParams{}))
+	}
+	lines = append(lines, tsLine(t, "fast", MethodInspectRequest, RequestInfo{TargetHost: "fast"}))
+	msgs, err := tsServe(t, p, lines...)
+	if err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+	byID := tsByID(t, msgs)
+	if len(byID) != total+2 {
+		t.Fatalf("got %d responses, want %d", len(byID), total+2)
+	}
+	var dec RequestDecision
+	tsResult(t, byID[`"fast"`], &dec)
+	full := 0
+	for i := 1; i <= total; i++ {
+		msg := byID[fmt.Sprint(i)]
+		if msg.Error != nil && strings.Contains(msg.Error.Message, "event queue full") {
+			full++
+		}
+	}
+	if full < extra {
+		t.Fatalf("%d event batches refused, want at least %d", full, extra)
+	}
+	// The inspect call was answered while event batches were still blocked
+	// (they only end when the session's contexts are cancelled).
+	inspectAt := tsIndexOf(msgs, func(m Message) bool { return string(m.ID) == `"fast"` })
+	cancelledAt := tsIndexOf(msgs, func(m Message) bool {
+		return m.Error != nil && strings.Contains(m.Error.Message, "context canceled")
+	})
+	if cancelledAt < 0 || inspectAt > cancelledAt {
+		t.Fatalf("inspect answered at %d, first cancelled batch at %d", inspectAt, cancelledAt)
+	}
+}
+
+func TestServeIOSkipsOversizedLine(t *testing.T) {
+	p := &tsFullPlugin{}
+	huge := `{"jsonrpc":"2.0","id":2,"method":"` + MethodEventBatch + `","params":{"events":[],"pad":"` +
+		strings.Repeat("x", maxLineBytes) + `"}}`
+	msgs, err := tsServe(t, p,
+		tsRegister(t, 1, map[string]any{"block": "bad.example"}),
+		huge,
+		tsLine(t, 3, MethodInspectRequest, RequestInfo{TargetHost: "bad.example"}),
+		tsLine(t, 4, MethodShutdown, nil),
+	)
+	if err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+	byID := tsByID(t, msgs)
+	tsWantError(t, byID, "null", CodeInvalidRequest, "exceeds")
+	if _, ok := byID["2"]; ok {
+		t.Fatal("oversized line was handled")
+	}
+	var dec RequestDecision
+	tsResult(t, byID["3"], &dec)
+	if dec.Action != ActionReject {
+		t.Fatalf("inspect after oversized line = %+v, want reject", dec)
+	}
+	var empty map[string]any
+	tsResult(t, byID["4"], &empty)
+}
+
+func TestServeIOInspectHonorsHostTimeout(t *testing.T) {
+	p := &tsBlockingPlugin{}
+	msgs, err := tsServe(t, p,
+		tsRegister(t, 1, map[string]any{}),
+		tsLine(t, 2, MethodInspectRequest, RequestInfo{TargetHost: "slow", TimeoutMs: 50}),
+		tsLine(t, 3, MethodShutdown, nil),
+	)
+	if err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+	byID := tsByID(t, msgs)
+	// "deadline exceeded" (not "canceled") shows the call ended at the
+	// host's timeout rather than when the session was torn down.
+	tsWantError(t, byID, "2", CodeInternalError, "deadline exceeded")
+}
+
+func TestServeIORefusesInspectsBeyondLimit(t *testing.T) {
+	p := &tsBlockingPlugin{}
+	lines := []string{tsRegister(t, 0, map[string]any{})}
+	const extra = 2
+	for i := 1; i <= maxConcurrentInspects+extra; i++ {
+		lines = append(lines, tsLine(t, i, MethodInspectRequest, RequestInfo{TargetHost: "slow"}))
+	}
+	msgs, err := tsServe(t, p, lines...)
+	if err != nil {
+		t.Fatalf("ServeIO: %v", err)
+	}
+	if len(msgs) != maxConcurrentInspects+extra+1 {
+		t.Fatalf("got %d responses, want %d", len(msgs), maxConcurrentInspects+extra+1)
+	}
+	busy := 0
+	for _, m := range msgs {
+		if m.Error != nil && strings.Contains(m.Error.Message, "plugin busy") {
+			busy++
+		}
+	}
+	if busy != extra {
+		t.Fatalf("%d inspect calls refused as busy, want %d", busy, extra)
+	}
+}
+
+// tsStuckPlugin ignores cancellation until released.
+type tsStuckPlugin struct {
+	tsConfigOnly
+	release chan struct{}
+}
+
+func (p *tsStuckPlugin) InspectRequest(context.Context, *RequestInfo) (*RequestDecision, error) {
+	<-p.release
+	return Continue(), nil
+}
+
+func TestServeIOShutdownDoesNotWaitForStuckCalls(t *testing.T) {
+	p := &tsStuckPlugin{release: make(chan struct{})}
+	defer close(p.release)
+	in := strings.Join([]string{
+		tsRegister(t, 1, map[string]any{}),
+		tsLine(t, 2, MethodInspectRequest, RequestInfo{}),
+		tsLine(t, 3, MethodShutdown, nil),
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- ServeIO(context.Background(), strings.NewReader(in), &out, p) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeIO: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeIO waited for a stuck call")
+	}
+	if elapsed := time.Since(start); elapsed > drainTimeout+cancelGrace+time.Second {
+		t.Fatalf("shutdown took %v", elapsed)
+	}
+	msgs := tsParseOutput(t, out.Bytes())
+	if len(msgs) != 2 || string(msgs[0].ID) != "1" || string(msgs[1].ID) != "3" {
+		t.Fatalf("responses = %+v, want register and shutdown only", msgs)
+	}
+
+	// A call finishing after the shutdown response writes nothing.
+	written := out.Len()
+	select {
+	case p.release <- struct{}{}:
+	case <-time.After(time.Second):
+		t.Fatal("the stuck call was not running")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if out.Len() != written {
+		t.Fatalf("output grew after the shutdown response: %s", out.Bytes()[written:])
+	}
+}
+
+// tsSlowConfigure blocks Configure calls after the first until released.
+type tsSlowConfigure struct {
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (p *tsSlowConfigure) Configure(ctx context.Context, _ json.RawMessage) error {
+	if p.calls.Add(1) == 1 {
+		return nil
+	}
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestServeIOSlowConfigureDoesNotBlockReader(t *testing.T) {
+	p := &tsSlowConfigure{release: make(chan struct{})}
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := ServeIO(context.Background(), inR, outW, p)
+		outW.Close()
+		done <- err
+	}()
+	lines := make(chan Message, 8)
+	go func() {
+		sc := bufio.NewScanner(outR)
+		for sc.Scan() {
+			var msg Message
+			if err := json.Unmarshal(sc.Bytes(), &msg); err == nil {
+				lines <- msg
+			}
+		}
+		close(lines)
+	}()
+	next := func() Message {
+		t.Helper()
+		select {
+		case msg := <-lines:
+			return msg
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for a response")
+		}
+		return Message{}
+	}
+	send := func(s string) {
+		t.Helper()
+		if _, err := io.WriteString(inW, s+"\n"); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	send(tsRegister(t, 1, map[string]any{}))
+	if msg := next(); string(msg.ID) != "1" || msg.Error != nil {
+		t.Fatalf("register response = %+v", msg)
+	}
+	send(tsLine(t, 2, MethodConfigure, ConfigureParams{Config: json.RawMessage(`{}`)}))
+	// The reader keeps going while Configure runs.
+	send(tsLine(t, 3, "nope", nil))
+	if msg := next(); string(msg.ID) != "3" || msg.Error == nil || msg.Error.Code != CodeMethodNotFound {
+		t.Fatalf("response while configure runs = %+v", msg)
+	}
+	close(p.release)
+	if msg := next(); string(msg.ID) != "2" || msg.Error != nil {
+		t.Fatalf("configure response = %+v", msg)
+	}
+	inW.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeIO: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ServeIO did not return after stdin closed")
+	}
+}

@@ -1778,19 +1778,23 @@ func TestEventQueueDropsWhenFull(t *testing.T) {
 }
 
 func TestEventQueueStopBoundedByContext(t *testing.T) {
-	release := make(chan struct{})
 	entered := make(chan struct{}, 1)
 	deliver := func(ctx context.Context, _ []pluginsdk.Event) error {
 		select {
 		case entered <- struct{}{}:
 		default:
 		}
-		<-release
-		return nil
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	q := newEventQueue(4, 1, time.Hour, deliver, nil)
 	q.push(tmLazy("e0"))
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not start delivering")
+	}
+	q.push(tmLazy("e1"))
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -1798,11 +1802,30 @@ func TestEventQueueStopBoundedByContext(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("stop waited %v despite a 50ms context", elapsed)
 	}
-	close(release)
+	// stop cancelled the delivery in progress and waited for the worker, so
+	// the plugin can be closed right away.
 	select {
 	case <-q.doneCh:
-	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not exit after delivery returned")
+	default:
+		t.Fatal("stop returned before the worker exited")
+	}
+	// e0 failed with the cancelled delivery; e1 was never sent.
+	if got := q.dropped.Load(); got != 1 {
+		t.Fatalf("dropped = %d, want 1", got)
+	}
+}
+
+func TestEventQueueCapsBatchBytes(t *testing.T) {
+	sink := &tmSink{}
+	q := newEventQueue(16, 100, time.Hour, sink.deliver, sink.onResult)
+	// Two of these fit in one batch, three do not.
+	big := strings.Repeat("x", maxEventBatchBytes*2/5)
+	for i := 0; i < 5; i++ {
+		q.push(newLazyEvent(fmt.Sprintf("e%d", i), time.Unix(0, 0), func() any { return big }))
+	}
+	q.stop(context.Background())
+	if _, results := sink.snapshot(); !reflect.DeepEqual(results, []int{2, 2, 1}) {
+		t.Fatalf("batch sizes = %v, want [2 2 1]", results)
 	}
 }
 

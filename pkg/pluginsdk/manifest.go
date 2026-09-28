@@ -110,7 +110,7 @@ func (m *Manifest) Validate() error {
 		return errors.New("manifest: version is required (max 64 chars)")
 	}
 	for _, ev := range m.Capabilities.Events {
-		if !validEventPattern(ev) {
+		if !ValidEventPattern(ev) {
 			return fmt.Errorf("manifest: unknown event subscription %q", ev)
 		}
 	}
@@ -167,6 +167,34 @@ func (m *Manifest) DefaultConfig() json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return data
+}
+
+// ApplyConfigDefaults returns the config object raw (empty means {}) with
+// config_fields defaults filled in for keys that are missing or null. Other
+// keys are kept unchanged.
+func (m *Manifest) ApplyConfigDefaults(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return nil, errors.New("config must be a JSON object")
+	}
+	changed := false
+	for _, f := range m.ConfigFields {
+		if len(f.Default) == 0 {
+			continue
+		}
+		if v, ok := obj[f.Name]; ok && !bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			continue
+		}
+		obj[f.Name] = f.Default
+		changed = true
+	}
+	if !changed {
+		return raw, nil
+	}
+	return json.Marshal(obj)
 }
 
 // ValidateConfig checks a config object against config_fields. Keys that are
@@ -249,7 +277,9 @@ func checkFieldValue(f ConfigField, value json.RawMessage) error {
 	return nil
 }
 
-func validEventPattern(pattern string) bool {
+// ValidEventPattern reports whether pattern is "*", a known event type, or a
+// "prefix.*" wildcard that covers at least one known event type.
+func ValidEventPattern(pattern string) bool {
 	if pattern == "*" {
 		return true
 	}

@@ -236,19 +236,26 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		res := p.hooks.InspectRequest(r.Context(), &pluginsdk.RequestInfo{
 			ProxyType:  pluginsdk.ProxyTypeForward,
 			ClientIP:   lifecycle.log.ClientIP,
-			Platform:   platName,
+			Platform:   hookPlatform(platName),
 			Account:    account,
 			TargetHost: r.Host,
 			Method:     r.Method,
-			URL:        r.URL.String(),
+			URL:        lifecycle.log.TargetURL,
 			Headers:    hookHeaders(r.Header),
 		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
 		if res.Reject != nil {
 			lifecycle.applyHookReject(res.Reject)
 			writePluginReject(w, res)
 			return
 		}
-		platName, account = res.Platform, res.Account
+		if res.Platform != hookPlatform(platName) {
+			platName = res.Platform
+		}
+		account = res.Account
 		lifecycle.setAccount(account)
 		headerOps = res.HeaderOps
 	}
@@ -357,18 +364,25 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 			ProxyType:  pluginsdk.ProxyTypeForward,
 			IsConnect:  true,
 			ClientIP:   lifecycle.log.ClientIP,
-			Platform:   platName,
+			Platform:   hookPlatform(platName),
 			Account:    account,
 			TargetHost: target,
 			Method:     r.Method,
 			Headers:    hookHeaders(r.Header),
 		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
 		if res.Reject != nil {
 			lifecycle.applyHookReject(res.Reject)
 			writePluginReject(w, res)
 			return
 		}
-		platName, account = res.Platform, res.Account
+		if res.Platform != hookPlatform(platName) {
+			platName = res.Platform
+		}
+		account = res.Account
 		lifecycle.setAccount(account)
 	}
 

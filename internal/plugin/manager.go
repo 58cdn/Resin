@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Resinat/Resin/internal/model"
 	"github.com/Resinat/Resin/internal/proxy"
@@ -82,6 +83,8 @@ type entry struct {
 	stateMu   sync.Mutex
 	status    string
 	lastError string
+	// stateGen counts state changes, see setStateIf.
+	stateGen uint64
 
 	requests    atomic.Int64
 	rejects     atomic.Int64
@@ -94,11 +97,39 @@ type entry struct {
 	restarts    atomic.Int64
 }
 
-func (e *entry) setState(status, lastError string) {
+// setState records the status and returns a token for setStateIf.
+func (e *entry) setState(status, lastError string) uint64 {
 	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	e.status = status
 	e.lastError = lastError
-	e.stateMu.Unlock()
+	e.stateGen++
+	return e.stateGen
+}
+
+// setStateIf records the status unless it changed since the setState call
+// that returned token, for example because the process crashed meanwhile.
+func (e *entry) setStateIf(token uint64, status, lastError string) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.stateGen != token {
+		return
+	}
+	e.status = status
+	e.lastError = lastError
+	e.stateGen++
+}
+
+// effectiveConfig fills in config_fields defaults and validates the result.
+func (e *entry) effectiveConfig(config json.RawMessage) (json.RawMessage, error) {
+	full, err := e.manifest.ApplyConfigDefaults(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.manifest.ValidateConfig(full); err != nil {
+		return nil, err
+	}
+	return full, nil
 }
 
 func (e *entry) state() (string, string) {
@@ -263,7 +294,14 @@ func (m *Manager) startEntry(ctx context.Context, e *entry, config json.RawMessa
 		e.setState(StatusError, e.loadErr)
 		return errors.New(e.loadErr)
 	}
-	e.setState(StatusStarting, "")
+	config, err := e.effectiveConfig(config)
+	if err != nil {
+		err = fmt.Errorf("invalid config: %w", err)
+		m.cfg.Logf("[plugin] %s failed to start: %v", e.id, err)
+		e.setState(StatusError, err.Error())
+		return err
+	}
+	token := e.setState(StatusStarting, "")
 	inst, err := m.newInstance(ctx, e, config)
 	if err != nil {
 		m.cfg.Logf("[plugin] %s failed to start: %v", e.id, err)
@@ -271,8 +309,18 @@ func (m *Manager) startEntry(ctx context.Context, e *entry, config json.RawMessa
 		return err
 	}
 	e.inst = inst
-	caps := inst.Capabilities()
-	if len(caps.Events) > 0 {
+	m.syncEventQueue(ctx, e)
+	e.setStateIf(token, StatusRunning, "")
+	return nil
+}
+
+// syncEventQueue starts or stops e's event worker to match the event
+// subscription of its instance. Caller holds m.mu.
+func (m *Manager) syncEventQueue(ctx context.Context, e *entry) {
+	inst := e.inst
+	subscribed := inst != nil && len(inst.Capabilities().Events) > 0
+	switch {
+	case subscribed && e.events == nil:
 		e.events = newEventQueue(defaultEventQueueSize, defaultEventBatchSize, defaultEventFlush,
 			inst.HandleEvents,
 			func(n int, err error) {
@@ -283,9 +331,14 @@ func (m *Manager) startEntry(ctx context.Context, e *entry, config json.RawMessa
 				}
 				e.delivered.Add(int64(n))
 			})
+	case !subscribed && e.events != nil:
+		// Pushes to a stopped queue are no-ops until the caller rebuilds
+		// the chain.
+		q := e.events
+		e.events = nil
+		q.stop(ctx)
+		e.dropped.Add(q.dropped.Load())
 	}
-	e.setState(StatusRunning, "")
-	return nil
 }
 
 func (m *Manager) newInstance(ctx context.Context, e *entry, config json.RawMessage) (instance, error) {
@@ -312,19 +365,22 @@ func (m *Manager) newInstance(ctx context.Context, e *entry, config json.RawMess
 		Declared:     e.manifest.Capabilities,
 		ResinVersion: m.cfg.ResinVersion,
 		Logf:         m.cfg.Logf,
-		OnStatus:     e.setState,
+		OnStatus:     func(status, lastError string) { e.setState(status, lastError) },
 		OnRestart:    func() { e.restarts.Add(1) },
 	}
 	return startProcess(ctx, spec, config)
 }
 
-// stopEntry stops e's instance and event worker. Caller holds m.mu.
+// stopEntry takes e out of the hot path, then stops its event worker and
+// instance. Caller holds m.mu.
 func (m *Manager) stopEntry(ctx context.Context, e *entry) {
 	inst, q := e.inst, e.events
 	e.inst, e.events = nil, nil
+	// Requests must not reach an instance that is shutting down.
+	m.rebuildChain()
 	if q != nil {
-		e.dropped.Add(q.dropped.Load())
 		q.stop(ctx)
+		e.dropped.Add(q.dropped.Load())
 	}
 	if inst != nil {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -350,7 +406,15 @@ func (m *Manager) rebuildChain() {
 	}
 	snap := &chainSnapshot{}
 	for _, e := range m.entries {
-		if e.inst == nil || !e.settings.Enabled {
+		if !e.settings.Enabled {
+			continue
+		}
+		if e.inst == nil {
+			// An enabled fail-closed hook that is not running rejects
+			// requests instead of silently letting them through.
+			if e.settings.FailClosed && e.manifest.Capabilities.RequestHook {
+				snap.request = append(snap.request, chainItem{e: e, failClosed: true})
+			}
 			continue
 		}
 		caps := e.inst.Capabilities()
@@ -396,6 +460,11 @@ func (m *Manager) InspectRequest(ctx context.Context, req *pluginsdk.RequestInfo
 	for _, item := range m.chain.Load().request {
 		dec, err := item.call(ctx, req)
 		if err != nil {
+			if ctx.Err() != nil {
+				// The client went away; no plugin is to blame.
+				res.Canceled = true
+				return res
+			}
 			if item.failClosed {
 				res.Reject = proxy.ErrPluginUnavailable
 				res.PluginID = item.e.id
@@ -425,13 +494,20 @@ func (m *Manager) InspectRequest(ctx context.Context, req *pluginsdk.RequestInfo
 	return res
 }
 
+var errPluginNotRunning = errors.New("plugin is not running")
+
 func (it chainItem) call(ctx context.Context, req *pluginsdk.RequestInfo) (*pluginsdk.RequestDecision, error) {
 	e := it.e
 	e.requests.Add(1)
+	if it.inst == nil {
+		e.errors.Add(1)
+		return nil, errPluginNotRunning
+	}
+	req.TimeoutMs = it.timeout.Milliseconds()
 	callCtx, cancel := context.WithTimeout(ctx, it.timeout)
 	start := time.Now()
 	dec, err := it.inst.Inspect(callCtx, req)
-	if err == nil && callCtx.Err() != nil {
+	if err == nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		// In-process plugins are not preempted; treat a late answer as a timeout.
 		err = callCtx.Err()
 	}
@@ -445,9 +521,12 @@ func (it chainItem) call(ctx context.Context, req *pluginsdk.RequestInfo) (*plug
 		}
 	}
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case ctx.Err() != nil:
+			// Cancelled by the caller: not the plugin's fault.
+		case errors.Is(err, context.DeadlineExceeded):
 			e.timeouts.Add(1)
-		} else {
+		default:
 			e.errors.Add(1)
 		}
 		return nil, err
@@ -470,11 +549,15 @@ func rejectError(dec *pluginsdk.RequestDecision) *proxy.ProxyError {
 // appendHeaderOps converts a decision's header changes into ordered ops and
 // applies them to req.Headers so later plugins see the result.
 func appendHeaderOps(ops []proxy.HeaderOp, req *pluginsdk.RequestInfo, dec *pluginsdk.RequestDecision) []proxy.HeaderOp {
-	if req.Headers == nil && (len(dec.RemoveHeaders) > 0 || len(dec.SetHeaders) > 0) {
-		// No rewritable headers for this request type (CONNECT / SOCKS5).
-		if req.IsConnect || req.ProxyType == pluginsdk.ProxyTypeSocks5 {
-			return ops
-		}
+	if len(dec.RemoveHeaders) == 0 && len(dec.SetHeaders) == 0 {
+		return ops
+	}
+	// No rewritable headers for this request type: the CONNECT request
+	// itself never reaches the upstream, and SOCKS5 has no headers.
+	if req.IsConnect || req.ProxyType == pluginsdk.ProxyTypeSocks5 {
+		return ops
+	}
+	if req.Headers == nil {
 		req.Headers = make(map[string][]string)
 	}
 	for _, name := range dec.RemoveHeaders {
@@ -518,6 +601,9 @@ func (m *Manager) ObserveRequest(entry proxy.RequestLogEntry) {
 			continue
 		}
 		if ev == nil {
+			// Only this copy escapes to the heap, so requests nobody
+			// subscribed to cost no allocation.
+			entry := entry
 			started := time.Unix(0, entry.StartedAtNs)
 			ev = newLazyEvent(pluginsdk.EventRequestFinished, started.Add(time.Duration(entry.DurationNs)), func() any {
 				return requestFinishedData(entry, started)
@@ -525,6 +611,21 @@ func (m *Manager) ObserveRequest(entry proxy.RequestLogEntry) {
 		}
 		subs[i].queue.push(ev)
 	}
+}
+
+// maxEventStringBytes caps free-form strings (URLs, upstream errors) copied
+// into event payloads.
+const maxEventStringBytes = 4096
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func requestFinishedData(e proxy.RequestLogEntry, started time.Time) pluginsdk.RequestFinishedData {
@@ -536,7 +637,7 @@ func requestFinishedData(e proxy.RequestLogEntry, started time.Time) pluginsdk.R
 		PlatformName:   e.PlatformName,
 		Account:        e.Account,
 		TargetHost:     e.TargetHost,
-		TargetURL:      e.TargetURL,
+		TargetURL:      truncateUTF8(e.TargetURL, maxEventStringBytes),
 		NodeHash:       e.NodeHash,
 		NodeTag:        e.NodeTag,
 		EgressIP:       e.EgressIP,
@@ -547,7 +648,7 @@ func requestFinishedData(e proxy.RequestLogEntry, started time.Time) pluginsdk.R
 		HTTPStatus:     e.HTTPStatus,
 		ResinError:     e.ResinError,
 		UpstreamStage:  e.UpstreamStage,
-		UpstreamErrMsg: e.UpstreamErrMsg,
+		UpstreamErrMsg: truncateUTF8(e.UpstreamErrMsg, maxEventStringBytes),
 		IngressBytes:   e.IngressBytes,
 		EgressBytes:    e.EgressBytes,
 	}
@@ -582,6 +683,7 @@ func (m *Manager) OnLeaseEvent(e routing.LeaseEvent) {
 			continue
 		}
 		if ev == nil {
+			e := e // see ObserveRequest
 			platformName := m.cfg.PlatformName
 			ev = newLazyEvent(typ, time.Now(), func() any {
 				data := pluginsdk.LeaseEventData{PlatformID: e.PlatformID, Account: e.Account}
@@ -732,27 +834,35 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 	if u.Enabled != nil {
 		next.Enabled = *u.Enabled
 	}
-
-	newConfig := e.config
-	configChanged := false
-	if u.Config != nil {
-		compacted, err := normalizeConfig(u.Config)
-		if err != nil {
-			return Info{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
-		}
-		if err := e.manifest.ValidateConfig(compacted); err != nil {
-			return Info{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
-		}
-		configChanged = !bytes.Equal(compacted, e.config)
-		newConfig = compacted
-	}
-	next.ConfigJSON = string(newConfig)
-
 	if next.Enabled && e.loadErr != "" {
 		return Info{}, fmt.Errorf("%w: cannot enable %s: %s", ErrInvalidArgument, id, e.loadErr)
 	}
 
+	// prevConfig is what a running instance is configured with.
 	prevConfig := e.config
+	if full, err := e.effectiveConfig(prevConfig); err == nil {
+		prevConfig = full
+	}
+	newConfig := e.config
+	if u.Config != nil || next.Enabled {
+		raw := e.config
+		if u.Config != nil {
+			compacted, err := normalizeConfig(u.Config)
+			if err != nil {
+				return Info{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+			}
+			raw = compacted
+		}
+		// Stored the way the plugin receives it, with defaults filled in.
+		full, err := e.effectiveConfig(raw)
+		if err != nil {
+			return Info{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
+		newConfig = full
+	}
+	configChanged := u.Config != nil && !bytes.Equal(newConfig, prevConfig)
+	next.ConfigJSON = string(newConfig)
+
 	startedNew := false
 	reconfigured := false
 	switch {
@@ -762,11 +872,14 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 		}
 		startedNew = true
 	case next.Enabled && configChanged:
-		cctx, cancel := context.WithTimeout(ctx, configureTimeout)
-		err := e.inst.Configure(cctx, newConfig)
-		cancel()
-		if err != nil {
-			return Info{}, fmt.Errorf("%w: plugin rejected config: %v", ErrInvalidArgument, err)
+		if err := m.configure(ctx, e, newConfig); err != nil {
+			if configRejected(e, err) {
+				return Info{}, fmt.Errorf("%w: plugin rejected config: %v", ErrInvalidArgument, err)
+			}
+			// The plugin may have applied the config anyway.
+			m.cfg.Logf("[plugin] %s configure failed: %v; restarting it with the previous config", id, err)
+			m.restartEntry(ctx, e, prevConfig)
+			return Info{}, fmt.Errorf("configure %s: %v (restarted with the previous config)", id, err)
 		}
 		reconfigured = true
 	case !next.Enabled && configChanged && e.builtin != nil:
@@ -795,9 +908,10 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 			case startedNew:
 				m.stopEntry(ctx, e)
 			case reconfigured:
-				cctx, cancel := context.WithTimeout(ctx, configureTimeout)
-				_ = e.inst.Configure(cctx, prevConfig)
-				cancel()
+				if cerr := m.configure(ctx, e, prevConfig); cerr != nil {
+					m.cfg.Logf("[plugin] %s: restoring the previous config failed: %v; restarting it", id, cerr)
+					m.restartEntry(ctx, e, prevConfig)
+				}
 			}
 			return Info{}, fmt.Errorf("persist plugin settings: %w", err)
 		}
@@ -811,8 +925,36 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 	if !next.Enabled {
 		e.setState(StatusStopped, "")
 	}
+	// A builtin's event subscription can depend on its config.
+	m.syncEventQueue(ctx, e)
 	m.rebuildChain()
 	return m.info(e), nil
+}
+
+// configure applies config to e's running instance. Caller holds m.mu.
+func (m *Manager) configure(ctx context.Context, e *entry, config json.RawMessage) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), configureTimeout)
+	defer cancel()
+	return e.inst.Configure(cctx, config)
+}
+
+// configRejected reports whether a Configure error means the plugin refused
+// the config. After other errors (timeout, crash) the outcome is unknown.
+func configRejected(e *entry, err error) bool {
+	var rpcErr *rpcError
+	if errors.As(err, &rpcErr) {
+		return true
+	}
+	return e.builtin != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
+}
+
+// restartEntry restarts e with config, so that the host and the plugin
+// agree on the config again. Caller holds m.mu.
+func (m *Manager) restartEntry(ctx context.Context, e *entry, config json.RawMessage) {
+	ctx = context.WithoutCancel(ctx)
+	m.stopEntry(ctx, e)
+	_ = m.startEntry(ctx, e, config) // failures are logged and shown in the status
+	m.rebuildChain()
 }
 
 func normalizeConfig(raw json.RawMessage) (json.RawMessage, error) {
@@ -842,21 +984,29 @@ func (m *Manager) Uninstall(ctx context.Context, id string) error {
 	if e.source == SourceBuiltin {
 		return fmt.Errorf("%w: builtin plugins cannot be uninstalled; disable it instead", ErrConflict)
 	}
-	m.stopEntry(ctx, e)
+	// Settings go first: if that fails nothing has changed, and a later
+	// reinstall never inherits them.
+	if m.cfg.Store != nil {
+		if err := m.cfg.Store.DeletePluginSettings(id); err != nil {
+			return fmt.Errorf("delete plugin settings: %w", err)
+		}
+	}
+	delete(m.stored, id)
 	delete(m.entries, id)
-	m.rebuildChain()
+	m.stopEntry(ctx, e)
 	if e.dir != "" {
 		if err := os.RemoveAll(e.dir); err != nil {
+			if _, statErr := os.Stat(e.dir); statErr == nil {
+				// Keep listing what is left so the removal can be retried.
+				m.entries[id] = m.loadPackage(id)
+				m.rebuildChain()
+			}
 			return fmt.Errorf("remove plugin directory: %w", err)
 		}
 	}
 	if dd := m.dataDir(id); dd != "" {
-		_ = os.RemoveAll(dd)
-	}
-	delete(m.stored, id)
-	if m.cfg.Store != nil {
-		if err := m.cfg.Store.DeletePluginSettings(id); err != nil {
-			return fmt.Errorf("delete plugin settings: %w", err)
+		if err := os.RemoveAll(dd); err != nil {
+			return fmt.Errorf("plugin removed, but its data directory could not be deleted: %w", err)
 		}
 	}
 	return nil
@@ -876,25 +1026,25 @@ func (m *Manager) Rescan(ctx context.Context) ([]Info, error) {
 		for _, e := range m.discoverPackages() {
 			found[e.id] = e
 		}
+		// Removed and changed packages are swapped out of the map first, so
+		// the chain published while they stop never includes them.
+		var stale []*entry
 		for id, old := range m.entries {
 			if old.source != SourcePackage {
 				continue
 			}
-			fresh, ok := found[id]
-			if !ok {
-				m.stopEntry(ctx, old)
-				delete(m.entries, id)
-				continue
-			}
-			if bytes.Equal(fresh.rawMF, old.rawMF) && fresh.loadErr == old.loadErr {
+			if fresh, ok := found[id]; ok && bytes.Equal(fresh.rawMF, old.rawMF) && fresh.loadErr == old.loadErr {
 				delete(found, id)
 				continue
 			}
-			m.stopEntry(ctx, old)
+			stale = append(stale, old)
 			delete(m.entries, id)
 		}
 		for id, e := range found {
 			m.entries[id] = e
+		}
+		for _, old := range stale {
+			m.stopEntry(ctx, old)
 		}
 	}
 	for _, e := range m.entries {

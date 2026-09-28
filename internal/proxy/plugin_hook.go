@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
@@ -48,6 +49,9 @@ type HeaderOp struct {
 type RequestHookResult struct {
 	// Reject, when non-nil, aborts the request with this error.
 	Reject *ProxyError
+	// Canceled reports that the client went away while the plugins ran. The
+	// request is aborted without writing a response.
+	Canceled bool
 	// PluginID is the plugin that rejected the request (if any).
 	PluginID string
 	// Platform and Account are the (possibly rewritten) routing identity.
@@ -58,6 +62,15 @@ type RequestHookResult struct {
 }
 
 func hookActive(h RequestHook) bool { return h != nil && h.Active() }
+
+// hookPlatform is the platform name shown to plugins. Requests without one
+// are routed to the Default platform, so that is the name plugins see.
+func hookPlatform(name string) string {
+	if name == "" {
+		return platform.DefaultPlatformName
+	}
+	return name
+}
 
 // applyHookReject records a plugin rejection on the request lifecycle.
 func (l *requestLifecycle) applyHookReject(pe *ProxyError) {
