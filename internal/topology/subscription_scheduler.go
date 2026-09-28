@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/scanloop"
 	"github.com/Resinat/Resin/internal/subscription"
+	"github.com/zeebo/xxh3"
 )
 
 const schedulerLookahead = 15 * time.Second
@@ -213,14 +215,21 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		}
 	}
 
-	// 2. Parse (lock-free).
+	// 2. Unchanged content: identical bytes rebuild the managed view already in
+	// place, so skip parse/hash/diff and only record the successful check.
+	contentHash := xxh3.Hash128(body).Bytes()
+	if s.tryApplyUnchangedContent(sub, attemptSeq, attemptConfigVersion, contentHash) {
+		return
+	}
+
+	// 3. Parse (lock-free).
 	parsed, err := subscription.ParseGeneralSubscription(body)
 	if err != nil {
 		s.handleUpdateFailure(sub, attemptStartedNs, attemptSeq, attemptConfigVersion, "parse", err)
 		return
 	}
 
-	// 3. Build refreshed managed nodes map (lock-free, pure computation).
+	// 4. Build refreshed managed nodes map (lock-free, pure computation).
 	refreshedManagedNodes := subscription.NewManagedNodes()
 	rawByHash := make(map[node.Hash][]byte)
 	for _, p := range parsed {
@@ -233,7 +242,7 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		}
 	}
 
-	// 4. Diff, swap, add/remove — under lock.
+	// 5. Diff, swap, add/remove — under lock.
 	applied := false
 	sub.WithOpLock(func() {
 		// If refresh-input config changed while this attempt was in-flight, discard.
@@ -248,7 +257,8 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 		old := sub.ManagedNodes()
 		mergedManagedNodes := refreshedManagedNodes
-		if sub.IncrementalAliveNodes() {
+		incremental := sub.IncrementalAliveNodes()
+		if incremental {
 			mergedManagedNodes = subscription.NewManagedNodes()
 			old.RangeNodes(func(h node.Hash, oldNode subscription.ManagedNode) bool {
 				if oldNode.Evicted {
@@ -305,6 +315,9 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 			if ok && managed.Evicted {
 				continue
 			}
+			if s.keptBindingUnchanged(sub, old, h, managed) {
+				continue
+			}
 			raw := rawByHash[h]
 			if len(raw) == 0 {
 				if entry, ok := s.pool.GetEntry(h); ok {
@@ -319,12 +332,15 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		for _, h := range removed {
 			s.pool.RemoveNodeFromSub(h, sub.ID)
 		}
-		// 5. Update timestamps (inside lock, using current time).
+		// 6. Update timestamps (inside lock, using current time).
 		now := time.Now().UnixNano()
 		sub.LastCheckedNs.Store(now)
 		sub.LastUpdatedNs.Store(now)
 		sub.MarkAppliedAttempt(attemptSeq)
 		sub.SetLastError("")
+		// Incremental merges keep nodes absent from the content, so the view
+		// no longer mirrors these bytes and must not be short-circuited later.
+		sub.SetAppliedContentHash(contentHash, !incremental)
 		applied = true
 	})
 	if !applied {
@@ -335,6 +351,100 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	if s.onSubUpdated != nil {
 		s.onSubUpdated(sub)
 	}
+}
+
+// tryApplyUnchangedContent completes a refresh whose content is byte-identical
+// to the last applied replace-mode refresh. It returns false when the full
+// refresh path must run instead.
+func (s *SubscriptionScheduler) tryApplyUnchangedContent(
+	sub *subscription.Subscription,
+	attemptSeq int64,
+	attemptConfigVersion int64,
+	contentHash [16]byte,
+) bool {
+	if !contentMatchesApplied(sub, contentHash) {
+		return false
+	}
+
+	handled := false
+	applied := false
+	sub.WithOpLock(func() {
+		if !contentMatchesApplied(sub, contentHash) {
+			return
+		}
+		handled = true
+		// Same stale guards as the full path.
+		if sub.ConfigVersion() != attemptConfigVersion {
+			return
+		}
+		if sub.LastAppliedSeq() > attemptSeq {
+			return
+		}
+		// Fall back to the full path if any pool binding went missing, so
+		// re-applying the content can restore it.
+		if !s.poolHoldsManagedNodes(sub) {
+			handled = false
+			return
+		}
+		now := time.Now().UnixNano()
+		sub.LastCheckedNs.Store(now)
+		sub.LastUpdatedNs.Store(now)
+		sub.MarkAppliedAttempt(attemptSeq)
+		sub.SetLastError("")
+		applied = true
+	})
+	if !handled {
+		return false
+	}
+	if !applied {
+		log.Printf("[scheduler] stale success ignored for %s", sub.ID)
+		return true
+	}
+
+	if s.onSubUpdated != nil {
+		s.onSubUpdated(sub)
+	}
+	return true
+}
+
+func contentMatchesApplied(sub *subscription.Subscription, contentHash [16]byte) bool {
+	if sub.IncrementalAliveNodes() {
+		return false
+	}
+	prev, ok := sub.AppliedContentHash()
+	return ok && prev == contentHash
+}
+
+// poolHoldsManagedNodes reports whether every non-evicted managed node is still
+// bound to sub in the pool.
+func (s *SubscriptionScheduler) poolHoldsManagedNodes(sub *subscription.Subscription) bool {
+	intact := true
+	sub.ManagedNodes().RangeNodes(func(h node.Hash, managed subscription.ManagedNode) bool {
+		if managed.Evicted {
+			return true
+		}
+		entry, ok := s.pool.GetEntry(h)
+		intact = ok && entry.HasSubscriptionID(sub.ID)
+		return intact
+	})
+	return intact
+}
+
+// keptBindingUnchanged reports whether a kept node needs no re-add: same tags
+// as before and still bound to sub in the pool. Re-adding it would only
+// re-persist the same row and re-evaluate every platform for no change.
+func (s *SubscriptionScheduler) keptBindingUnchanged(
+	sub *subscription.Subscription,
+	old *subscription.ManagedNodes,
+	h node.Hash,
+	managed subscription.ManagedNode,
+) bool {
+	oldNode, ok := old.LoadNode(h)
+	if !ok || oldNode.Evicted || !slices.Equal(oldNode.Tags, managed.Tags) {
+		return false
+	}
+	entry, ok := s.pool.GetEntry(h)
+	return ok && entry.HasSubscriptionID(sub.ID)
 }
 
 // handleUpdateFailure applies a fetch/parse failure to subscription state.

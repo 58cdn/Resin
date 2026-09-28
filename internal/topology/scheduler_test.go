@@ -427,6 +427,228 @@ func TestScheduler_UpdateSubscription_IncrementalAliveModeRemovesUnhealthyOldNod
 	}
 }
 
+// subNodeChangeCounter counts pool OnSubNodeChanged callbacks per node hash.
+type subNodeChangeCounter struct {
+	mu     sync.Mutex
+	byHash map[node.Hash]int
+}
+
+func (c *subNodeChangeCounter) record(_ string, h node.Hash, _ bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byHash == nil {
+		c.byHash = make(map[node.Hash]int)
+	}
+	c.byHash[h]++
+}
+
+func (c *subNodeChangeCounter) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byHash = nil
+}
+
+func (c *subNodeChangeCounter) snapshot() map[node.Hash]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[node.Hash]int, len(c.byHash))
+	for h, n := range c.byHash {
+		out[h] = n
+	}
+	return out
+}
+
+func newCountingTestPool(subMgr *SubscriptionManager) (*GlobalNodePool, *subNodeChangeCounter) {
+	counter := &subNodeChangeCounter{}
+	pool := NewGlobalNodePool(PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(addr netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		OnSubNodeChanged:       counter.record,
+	})
+	return pool, counter
+}
+
+func TestScheduler_UpdateSubscription_UnchangedContentSkipsReapply(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool, changes := newCountingTestPool(subMgr)
+	body := makeSubscriptionJSON(
+		`{"type":"shadowsocks","tag":"us-1","server":"1.1.1.1","server_port":443}`,
+		`{"type":"vmess","tag":"jp-1","server":"2.2.2.2","server_port":443}`,
+	)
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(body, nil))
+	sched.UpdateSubscription(sub)
+	if got := len(changes.snapshot()); got != 2 {
+		t.Fatalf("initial refresh should bind 2 nodes, got %d", got)
+	}
+
+	managedBefore := sub.ManagedNodes()
+	changes.reset()
+	sub.LastCheckedNs.Store(1)
+	sub.LastUpdatedNs.Store(1)
+	sub.SetLastError("previous failure")
+
+	sched.UpdateSubscription(sub)
+
+	if got := changes.snapshot(); len(got) != 0 {
+		t.Fatalf("unchanged content should not re-bind nodes, got %v", got)
+	}
+	if sub.ManagedNodes() != managedBefore {
+		t.Fatal("unchanged content should keep the managed view instead of rebuilding it")
+	}
+	if sub.LastCheckedNs.Load() <= 1 || sub.LastUpdatedNs.Load() <= 1 {
+		t.Fatal("unchanged content should still advance check/update timestamps")
+	}
+	if sub.GetLastError() != "" {
+		t.Fatalf("unchanged content should clear last error, got %q", sub.GetLastError())
+	}
+	if pool.Size() != 2 {
+		t.Fatalf("expected 2 nodes in pool, got %d", pool.Size())
+	}
+}
+
+func TestScheduler_UpdateSubscription_TagChangeRebindsOnlyChangedNode(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool, changes := newCountingTestPool(subMgr)
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(makeSubscriptionJSON(
+		`{"type":"shadowsocks","tag":"stable","server":"1.1.1.1","server_port":443}`,
+		`{"type":"vmess","tag":"renamed-old","server":"2.2.2.2","server_port":443}`,
+	), nil))
+	sched.UpdateSubscription(sub)
+
+	stableHash := node.HashFromRawOptions([]byte(`{"type":"shadowsocks","server":"1.1.1.1","server_port":443}`))
+	renamedHash := node.HashFromRawOptions([]byte(`{"type":"vmess","server":"2.2.2.2","server_port":443}`))
+
+	changes.reset()
+	sched.Fetcher = makeMockFetcher(makeSubscriptionJSON(
+		`{"type":"shadowsocks","tag":"stable","server":"1.1.1.1","server_port":443}`,
+		`{"type":"vmess","tag":"renamed-new","server":"2.2.2.2","server_port":443}`,
+	), nil)
+	sched.UpdateSubscription(sub)
+
+	got := changes.snapshot()
+	if got[stableHash] != 0 {
+		t.Fatalf("node with unchanged tags should not be re-bound, got %d calls", got[stableHash])
+	}
+	if got[renamedHash] != 1 {
+		t.Fatalf("node with changed tags should be re-bound once, got %d calls", got[renamedHash])
+	}
+	managed, ok := sub.ManagedNodes().LoadNode(renamedHash)
+	if !ok || len(managed.Tags) != 1 || managed.Tags[0] != "renamed-new" {
+		t.Fatalf("managed tags should follow the new content, got %+v", managed)
+	}
+}
+
+func TestScheduler_UpdateSubscription_UnchangedContentRestoresLostPoolBinding(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	raw := `{"type":"shadowsocks","tag":"us-1","server":"1.1.1.1","server_port":443}`
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(makeSubscriptionJSON(raw), nil))
+	sched.UpdateSubscription(sub)
+
+	h := node.HashFromRawOptions([]byte(raw))
+	// Lose the pool binding without marking the managed node evicted.
+	pool.RemoveNodeFromSub(h, sub.ID)
+	if _, ok := pool.GetEntry(h); ok {
+		t.Fatal("node should be gone from pool before refresh")
+	}
+
+	sched.UpdateSubscription(sub)
+
+	entry, ok := pool.GetEntry(h)
+	if !ok {
+		t.Fatal("refresh with unchanged content should restore the lost pool binding")
+	}
+	if !entry.HasSubscriptionID(sub.ID) {
+		t.Fatal("restored node should reference the subscription")
+	}
+}
+
+func TestScheduler_UpdateSubscription_IncrementalUnchangedContentStillPrunesUnhealthy(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	sub.SetIncrementalAliveNodes(true)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	oldRaw := `{"type":"shadowsocks","tag":"old","server":"1.1.1.1","server_port":443}`
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(makeSubscriptionJSON(oldRaw), nil))
+	sched.UpdateSubscription(sub)
+
+	oldHash := node.HashFromRawOptions([]byte(oldRaw))
+	oldEntry, ok := pool.GetEntry(oldHash)
+	if !ok {
+		t.Fatal("old node should exist after initial refresh")
+	}
+	outbound := testutil.NewNoopOutbound()
+	oldEntry.Outbound.Store(&outbound)
+	oldEntry.CircuitOpenSince.Store(0)
+	oldEntry.SetLastError("")
+
+	newBody := makeSubscriptionJSON(`{"type":"vmess","tag":"new","server":"2.2.2.2","server_port":443}`)
+	sched.Fetcher = makeMockFetcher(newBody, nil)
+	sched.UpdateSubscription(sub)
+	if _, ok := sub.ManagedNodes().LoadNode(oldHash); !ok {
+		t.Fatal("healthy old node should be retained in incremental mode")
+	}
+
+	// The retained node turns unhealthy; the next refresh returns identical
+	// bytes but must still prune it.
+	oldEntry.CircuitOpenSince.Store(time.Now().Add(-time.Minute).UnixNano())
+	sched.UpdateSubscription(sub)
+
+	if _, ok := sub.ManagedNodes().LoadNode(oldHash); ok {
+		t.Fatal("unhealthy old node should be pruned even when content is unchanged")
+	}
+	if _, ok := pool.GetEntry(oldHash); ok {
+		t.Fatal("unhealthy old node should be removed from pool")
+	}
+}
+
+func TestScheduler_UpdateSubscription_UnchangedContentHonorsConfigVersionGuard(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "http://example.com", true, false)
+	subMgr.Register(sub)
+
+	pool := newTestPool(subMgr)
+	body := makeSubscriptionJSON(`{"type":"shadowsocks","tag":"us-1","server":"1.1.1.1","server_port":443}`)
+	sched := newTestScheduler(subMgr, pool, makeMockFetcher(body, nil))
+	sched.UpdateSubscription(sub)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sched.Fetcher = func(string) ([]byte, error) {
+		close(started)
+		<-release
+		return body, nil
+	}
+	sub.LastCheckedNs.Store(1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sched.UpdateSubscription(sub)
+	}()
+	<-started
+	sub.SetFetchConfig("http://example.com/changed", sub.UpdateIntervalNs())
+	close(release)
+	<-done
+
+	if got := sub.LastCheckedNs.Load(); got != 1 {
+		t.Fatalf("stale unchanged-content attempt must not record a check, LastCheckedNs=%d", got)
+	}
+}
+
 // --- Test: Rename triggers re-filter ---
 
 func TestScheduler_RenameSubscription(t *testing.T) {
