@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Resinat/Resin/internal/plugin"
+	"github.com/Resinat/Resin/internal/proxy"
+	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
@@ -83,6 +86,38 @@ func tpDecodeWebhookBody(t *testing.T, raw []byte) tpWebhookBody {
 		t.Fatalf("decode webhook body %q: %v", raw, err)
 	}
 	return body
+}
+
+func TestWebhookManagerFiltersConfiguredEvents(t *testing.T) {
+	srv, capture := tpWebhookServer(t, http.StatusOK)
+	m := plugin.NewManager(plugin.ManagerConfig{Builtins: All()})
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { m.Stop(context.Background()) })
+	enabled := true
+	_, err := m.Update(context.Background(), WebhookID, plugin.Update{
+		Enabled: &enabled,
+		Config:  json.RawMessage(fmt.Sprintf(`{"url":%q,"events":["lease.*"]}`, srv.URL+"/hook")),
+	})
+	if err != nil {
+		t.Fatalf("Update webhook: %v", err)
+	}
+	m.ObserveRequest(proxy.RequestLogEntry{StartedAtNs: time.Now().UnixNano(), HTTPMethod: http.MethodGet})
+	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseCreate, PlatformID: "platform", Account: "account"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(capture.all()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	reqs := capture.all()
+	if len(reqs) != 1 {
+		t.Fatalf("server received %d requests, want 1", len(reqs))
+	}
+	body := tpDecodeWebhookBody(t, reqs[0].body)
+	if len(body.Events) != 1 || body.Events[0].Type != pluginsdk.EventLeaseCreated {
+		t.Fatalf("webhook events = %+v, want only lease.created", body.Events)
+	}
 }
 
 func TestWebhook_PostsEventBatch(t *testing.T) {
@@ -254,7 +289,7 @@ func TestWebhook_InvalidConfig(t *testing.T) {
 		{"headers wrong type", `{"url":"https://h.example.com","headers":["x"]}`, "invalid config"},
 		{"unknown event", `{"url":"https://h.example.com","events":["foo.bar"]}`, `events: unknown event type "foo.bar"`},
 		{"unknown lease event", `{"url":"https://h.example.com","events":["lease.bogus"]}`, `events: unknown event type "lease.bogus"`},
-		{"timeout too large", `{"url":"https://h.example.com","timeout_ms":60001}`, "timeout_ms must be at most 60000"},
+		{"timeout too large", `{"url":"https://h.example.com","timeout_ms":10001}`, "timeout_ms must be at most 10000"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -269,7 +304,7 @@ func TestWebhook_InvalidConfig(t *testing.T) {
 		`{"url":"https://h.example.com","events":["*"]}`,
 		`{"url":"https://h.example.com","events":["request.*","lease.*"]}`,
 		`{"url":"https://h.example.com","timeout_ms":0}`,
-		`{"url":"https://h.example.com","timeout_ms":60000}`,
+		`{"url":"https://h.example.com","timeout_ms":10000}`,
 		`{"url":"https://h.example.com","headers":{}}`,
 	}
 	for _, cfg := range valid {
@@ -313,7 +348,7 @@ func TestWebhook_ParentContextCancellation(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { close(release) })
 
-	h := tpWebhookHandler(t, fmt.Sprintf(`{"url":%q,"timeout_ms":30000}`, srv.URL))
+	h := tpWebhookHandler(t, fmt.Sprintf(`{"url":%q,"timeout_ms":10000}`, srv.URL))
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()

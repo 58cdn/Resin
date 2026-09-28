@@ -46,11 +46,13 @@ const (
 
 // Errors returned by Manager operations. Callers map them with errors.Is.
 var (
-	ErrNotFound         = errors.New("plugin not found")
-	ErrInvalidArgument  = errors.New("invalid argument")
-	ErrConflict         = errors.New("conflict")
-	ErrExternalDisabled = errors.New("external plugins are disabled (set RESIN_EXTERNAL_PLUGINS_ENABLED=true to enable)")
-	ErrStartFailed      = errors.New("plugin failed to start")
+	ErrNotFound               = errors.New("plugin not found")
+	ErrInvalidArgument        = errors.New("invalid argument")
+	ErrConflict               = errors.New("conflict")
+	ErrExternalDisabled       = errors.New("external plugins are disabled (set RESIN_EXTERNAL_PLUGINS_ENABLED=true to enable)")
+	ErrStartFailed            = errors.New("plugin failed to start")
+	ErrMarketplaceUnavailable = errors.New("marketplace unavailable")
+	ErrMarketplaceDownload    = errors.New("marketplace download failed")
 )
 
 // Builtin describes a plugin compiled into Resin.
@@ -124,4 +126,7 @@ type MarketplaceEntry struct {
 	UpdateAvailable  bool   `json:"update_available"`
 	Installable      bool   `json:"installable"`
 	Reason           string `json:"reason,omitempty"`
+
+	sourceIndex  int
+	rawArtifacts []IndexArtifact
 }

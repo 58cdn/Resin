@@ -99,7 +99,9 @@ function fieldLabel(field: PluginConfigField): string {
 }
 
 function initialFieldValue(field: PluginConfigField, config: PluginConfig): FieldValue {
-  const value: JsonValue | undefined = field.name in config ? config[field.name] : field.default;
+  const value: JsonValue | undefined = Object.prototype.hasOwnProperty.call(config, field.name)
+    ? config[field.name]
+    : field.default;
   switch (field.type) {
     case "boolean":
       return value === true;
@@ -387,6 +389,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
         <Switch
           id={`plugin-${plugin.id}-enabled`}
           checked={form.enabled}
+          disabled={pending}
           onChange={(event) => {
             setForm((current) => ({ ...current, enabled: event.target.checked }));
             setFormError("");
@@ -406,6 +409,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
               step={1}
               min={PRIORITY_MIN}
               max={PRIORITY_MAX}
+             disabled={pending}
               value={form.priority}
               onChange={(event) => {
                 setForm((current) => ({ ...current, priority: event.target.value }));
@@ -424,6 +428,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
               step={1}
               min={TIMEOUT_MIN_MS}
               max={TIMEOUT_MAX_MS}
+             disabled={pending}
               value={form.timeout_ms}
               onChange={(event) => {
                 setForm((current) => ({ ...current, timeout_ms: event.target.value }));
@@ -445,6 +450,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
             <Switch
               id={`plugin-${plugin.id}-fail-closed`}
               checked={form.fail_closed}
+             disabled={pending}
               onChange={(event) => {
                 setForm((current) => ({ ...current, fail_closed: event.target.checked }));
                 setFormError("");
@@ -465,7 +471,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
             pluginId={plugin.id}
             field={field}
             value={form.fields[field.name] ?? ""}
-            disabled={pending}
+           disabled={pending}
             onChange={(value) => setField(field.name, value)}
           />
         ))
@@ -475,6 +481,7 @@ function PluginForm({ plugin, pending, onClose, onSubmit }: PluginFormProps) {
             rows={8}
             spellCheck={false}
             className="plugin-code-input"
+           disabled={pending}
             value={form.rawConfig}
             aria-label={t("插件配置")}
             onChange={(event) => {
@@ -515,7 +522,7 @@ function capabilityLabels(plugin: Plugin, t: TranslateFn): string[] {
 }
 
 type InstalledTabProps = {
-  externalEnabled: boolean;
+  externalEnabled: boolean | undefined;
   showToast: (tone: "success" | "error", text: string) => void;
 };
 
@@ -733,6 +740,7 @@ function InstalledTab({ externalEnabled, showToast }: InstalledTabProps) {
               : t("启用插件 {{name}}", { name: plugin.name });
             const facts = [
               { label: t("请求"), value: plugin.stats.requests },
+              ...(plugin.capabilities.request_hook ? [{ label: t("优先级"), value: plugin.priority }] : []),
               { label: t("拒绝"), value: plugin.stats.rejects },
               { label: t("错误"), value: plugin.stats.errors },
               { label: t("超时"), value: plugin.stats.timeouts },
@@ -964,11 +972,13 @@ function marketplaceAction(entry: MarketplacePlugin, t: TranslateFn): { label: s
 }
 
 type MarketplaceTabProps = {
-  externalEnabled: boolean;
+  externalEnabled: boolean | undefined;
+  externalConfigLoading: boolean;
+  externalConfigError: unknown;
   showToast: (tone: "success" | "error", text: string) => void;
 };
 
-function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
+function MarketplaceTab({ externalEnabled, externalConfigLoading, externalConfigError, showToast }: MarketplaceTabProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [installingId, setInstallingId] = useState<string | null>(null);
@@ -976,7 +986,7 @@ function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
   const marketplaceQuery = useQuery({
     queryKey: ["plugins", "marketplace"],
     queryFn: getMarketplace,
-    enabled: externalEnabled,
+    enabled: externalEnabled === true,
     staleTime: 60_000,
     retry: false,
   });
@@ -1009,7 +1019,40 @@ function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
     installMutation.mutate(entry.id);
   };
 
-  if (!externalEnabled) {
+  if (externalConfigLoading) {
+    return (
+      <Card className="platform-cards-container">
+        <div className="callout callout-info">
+          <Info size={14} />
+          <span>{t("正在读取插件运行配置...")}</span>
+        </div>
+      </Card>
+    );
+  }
+
+  if (externalConfigError) {
+    return (
+      <Card className="platform-cards-container">
+        <div className="callout callout-error">
+          <AlertTriangle size={14} />
+          <span>{formatApiErrorMessage(externalConfigError, t)}</span>
+        </div>
+      </Card>
+    );
+  }
+
+  if (externalEnabled === undefined) {
+    return (
+      <Card className="platform-cards-container">
+        <div className="callout callout-warning">
+          <Info size={14} />
+          <span>{t("插件运行配置不可用，暂时无法读取插件市场。")}</span>
+        </div>
+      </Card>
+    );
+  }
+
+  if (externalEnabled === false) {
     return (
       <Card className="platform-cards-container">
         <div className="callout callout-warning">
@@ -1086,6 +1129,7 @@ function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
         <div className="endpoint-list">
           {listing?.plugins.map((entry) => {
             const action = marketplaceAction(entry, t);
+            const canUpdate = entry.update_available && entry.installable;
             const installing = installingId === entry.id;
             return (
               <article className="platform-tile endpoint-tile is-read-only" key={entry.id}>
@@ -1096,10 +1140,12 @@ function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
                     <div className="endpoint-tile-badges">
                       <Badge variant="muted">v{entry.version}</Badge>
                       {entry.installed_version ? (
-                        <Badge variant={entry.update_available ? "warning" : "success"}>
-                          {entry.update_available
+                        <Badge variant={canUpdate ? "warning" : "success"}>
+                          {canUpdate
                             ? t("已安装 v{{version}}，可更新", { version: entry.installed_version })
-                            : t("已安装")}
+                            : entry.installed_version
+                              ? t("已安装 v{{version}}", { version: entry.installed_version })
+                              : t("已安装")}
                         </Badge>
                       ) : null}
                       {(entry.tags ?? []).map((tag) => (
@@ -1111,7 +1157,7 @@ function MarketplaceTab({ externalEnabled, showToast }: MarketplaceTabProps) {
                   </div>
                   <Button
                     size="sm"
-                    variant={entry.update_available || !entry.installed_version ? "primary" : "secondary"}
+                    variant={canUpdate || !entry.installed_version ? "primary" : "secondary"}
                     disabled={!action.enabled || installMutation.isPending}
                     onClick={() => handleInstall(entry)}
                   >
@@ -1183,7 +1229,7 @@ export function PluginsPage() {
     queryFn: getEnvConfig,
     staleTime: 30_000,
   });
-  const externalEnabled = Boolean(envConfigQuery.data?.external_plugins_enabled);
+  const externalEnabled = envConfigQuery.data?.external_plugins_enabled;
   const tabs: { key: PluginTab; label: string }[] = [
     { key: "installed", label: t("已安装") },
     { key: "marketplace", label: t("插件市场") },
@@ -1202,7 +1248,19 @@ export function PluginsPage() {
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {envConfigQuery.data && !externalEnabled ? (
+      {envConfigQuery.isLoading ? (
+        <div className="callout callout-info">
+          <Info size={14} />
+          <span>{t("正在读取插件运行配置...")}</span>
+        </div>
+      ) : null}
+      {envConfigQuery.isError ? (
+        <div className="callout callout-error">
+          <AlertTriangle size={14} />
+          <span>{formatApiErrorMessage(envConfigQuery.error, t)}</span>
+        </div>
+      ) : null}
+      {externalEnabled === false ? (
         <div className="callout callout-warning">
           <Info size={14} />
           <span>{t(EXTERNAL_DISABLED_HINT)}</span>
@@ -1230,7 +1288,12 @@ export function PluginsPage() {
       {tab === "installed" ? (
         <InstalledTab externalEnabled={externalEnabled} showToast={showToast} />
       ) : (
-        <MarketplaceTab externalEnabled={externalEnabled} showToast={showToast} />
+        <MarketplaceTab
+          externalEnabled={externalEnabled}
+          externalConfigLoading={envConfigQuery.isLoading}
+          externalConfigError={envConfigQuery.isError ? envConfigQuery.error : null}
+          showToast={showToast}
+        />
       )}
     </section>
   );

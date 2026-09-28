@@ -138,6 +138,33 @@ func TestBuiltin_NewReturnsIndependentInstances(t *testing.T) {
 	}
 }
 
+func TestBuiltin_RejectsUnknownConfigFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		id     string
+		config string
+	}{
+		{"access control client cidr typo", AccessControlID, `{"client_cidr":["10.0.0.0/8"]}`},
+		{"access control rule typo", AccessControlID, `{"rule":[]}`},
+		{"header rewrite target host typo", HeaderRewriteID, `{"rules":[{"set":{"X-A":"v"},"target_host":["example.com"]}]}`},
+		{"webhook header typo", WebhookID, `{"url":"https://hooks.example.com","headerz":{}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tpConfigureErr(t, tc.id, tc.config); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("Configure(%s) error = %v, want unknown field", tc.id, err)
+			}
+		})
+	}
+}
+
+func TestAccessControl_ClientCIDRMatchesIPv6Zone(t *testing.T) {
+	p := tpConfigure(t, AccessControlID, `{"default_action":"deny","rules":[{"action":"allow","client_cidrs":["fe80::/64"]}]}`)
+	if dec := tpInspect(t, p, pluginsdk.RequestInfo{ProxyType: pluginsdk.ProxyTypeForward, ClientIP: "fe80::1%eth0"}); dec != nil {
+		t.Fatalf("zone-qualified IPv6 address was not allowed: %+v", dec)
+	}
+}
+
 func TestBuiltin_WildcardMatch(t *testing.T) {
 	cases := []struct {
 		pattern, value string

@@ -48,7 +48,10 @@ Per-plugin settings (stored in `state.db`, editable at runtime):
 | `fail_closed` | `false` | When the hook errors or times out: `false` skips the plugin, `true` rejects the request with `503 PLUGIN_ERROR` |
 | `config` | manifest defaults | Plugin-specific JSON object, validated against `config_fields` and hot-applied |
 
-## Security model
+The `resin.webhook` builtin has its own `config.timeout_ms`; it defaults to
+5000 and is capped at 10000 milliseconds because event delivery has a bounded
+shutdown budget.
+
 
 A package plugin runs with the same OS user and privileges as Resin. Only
 install plugins you trust.
@@ -57,10 +60,9 @@ install plugins you trust.
 - Plugin processes do **not** inherit `RESIN_*` environment variables (which
   include the admin and proxy tokens). They receive only `RESIN_PLUGIN_ID`,
   `RESIN_PLUGIN_DIR` and `RESIN_PLUGIN_DATA_DIR`.
-- `Proxy-Authorization` is never passed to plugins. Plugins cannot modify
-  `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`,
+- `Proxy-Authorization` is never passed to plugins. Plugins cannot modify `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`,
   `Trailer` or `Proxy-Authorization`; invalid header names and values are
-  ignored.
+  ignored. CONNECT and SOCKS5 requests never apply header operations.
 - Events never contain request/response bodies or headers.
 - Archives are checked for path traversal, absolute paths, links and size
   limits (100 MiB download, 512 MiB extracted, 4096 entries). Marketplace
@@ -74,7 +76,8 @@ authentication and before routing, Resin calls each enabled request plugin in
 priority order:
 
 1. The plugin receives a `RequestInfo`. Platform, Account and headers reflect
-   changes made by higher-priority plugins.
+   changes made by higher-priority plugins. When no platform is supplied, the
+   plugin sees `Platform: "Default"`.
 2. A `reject` decision stops the chain. HTTP clients get the plugin's status
    (default 403) and message, with `X-Resin-Error: PLUGIN_REJECTED` and
    `X-Resin-Plugin: <plugin id>`. SOCKS5 clients get reply `0x02`
@@ -82,9 +85,14 @@ priority order:
 3. A `continue` decision may override Platform/Account (used for routing and
    request logs) and set/remove headers. Header changes are applied to the
    upstream request for reverse proxy and plain HTTP forward proxy only.
-4. Errors and timeouts are counted in the plugin stats. With `fail_closed`
+   Reverse proxy uses Rewrite semantics: it does not append `X-Forwarded-For`,
+   and a plugin cannot expose the client IP by setting or removing that header.
+4. If the client disconnects while a plugin is running, the request ends
+   silently: no response is written and the plugin is not counted as an error.
+5. Errors and timeouts are counted in the plugin stats. With `fail_closed`
    the request fails with `503 PLUGIN_ERROR` (SOCKS5: general failure);
-   otherwise the plugin is skipped.
+   otherwise the plugin is skipped. An enabled fail-closed plugin that cannot
+   start publishes the same 503 placeholder in the request chain.
 
 When no request plugin is enabled the hot path costs a single atomic load.
 
@@ -93,7 +101,8 @@ When no request plugin is enabled the hot path costs a single atomic load.
 Events are delivered asynchronously and never slow down proxying. Each
 subscribed plugin has a bounded queue of 4096 events; events are sent in
 batches of up to 256, or every second. When a queue is full, new events are
-dropped and counted in `events_dropped`.
+dropped and counted in `events_dropped`. The webhook builtin only queues event
+patterns selected by its `events` configuration.
 
 `request.finished` data:
 
@@ -183,10 +192,12 @@ example.rate-limit/
 | `min_resin_version` | Optional dotted version. Packages requiring a newer Resin are refused at install/load time. Development builds (`dev`) skip the check |
 | `capabilities.request_hook` | Receive `request.inspect` calls |
 | `capabilities.events` | Event subscriptions: exact types, `*`, or `prefix.*` such as `lease.*` |
-| `config_fields` | Schema of the top-level keys of the config object; the WebUI renders a form from it. Undeclared keys are passed through |
+| `config_fields` | Schema of the top-level keys of the config object; the WebUI renders a form from it. Builtin plugins reject undeclared keys |
 | `runtimes` | `<goos>-<goarch>` (e.g. `linux-arm64`, `windows-amd64`) or `any`. A relative `command[0]` (containing `/` or `\`, or starting with `.`) is resolved inside the package and may not escape it (on Windows `.exe` is appended when the file has no extension and the `.exe` exists); an absolute path is used as is; a bare name such as `python3` is looked up in `PATH`. The working directory is the package directory |
 
-Config field types:
+`config` is an object: missing or `null` fields with manifest defaults are filled
+before Configure. Builtin plugins reject undeclared top-level keys; package
+plugins receive the object defined by their protocol implementation.
 
 | Type | JSON value | WebUI control |
 | --- | --- | --- |
@@ -357,7 +368,10 @@ can be configured; when two list the same id, the first URL wins.
 ```
 
 - Artifact URLs may be relative to the index URL, so a GitHub Pages site or
-  an object storage bucket with `index.json` next to the archives works.
+  an object storage bucket with `index.json` next to the archives works. A
+  relative artifact path does not inherit the index URL's query string; the
+  API listing redacts artifact credentials and query parameters, while install
+  requests retain the resolved private URL internally.
 - The best artifact for the running platform is chosen: exact `os`/`arch`,
   then `os` with `arch: "any"`, then `any`/`any`.
 - `sha256` is required and verified before extraction. The archive's

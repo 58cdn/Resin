@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -811,6 +812,201 @@ func TestPluginHook_Socks5InactiveHookNotCalled(t *testing.T) {
 	<-done
 	if n := hook.count.Load(); n != 0 {
 		t.Fatalf("inactive hook was called %d times", n)
+	}
+}
+
+func TestPluginHook_ReversePluginCannotExposeClientIPViaXFF(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   HeaderOp
+		want string
+	}{
+		{name: "remove", op: HeaderOp{Name: "X-Forwarded-For", Remove: true}},
+		{name: "set", op: HeaderOp{Name: "X-Forwarded-For", Value: "plugin-value"}, want: "plugin-value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := &tpFakeHook{fn: func(req *pluginsdk.RequestInfo) RequestHookResult {
+				res := tpEcho(req)
+				res.HeaderOps = []HeaderOp{tc.op}
+				return res
+			}}
+			rp := tpNewReverse(t, hook, nil)
+			upstream, seen := tpUpstream(t)
+			host := strings.TrimPrefix(upstream.URL, "http://")
+			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/tok/plat:acct/http/%s/xff", host), nil)
+			req.RemoteAddr = "203.0.113.50:1234"
+			w := httptest.NewRecorder()
+			rp.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status: got %d (body=%q, resinErr=%q)", w.Code, w.Body.String(), w.Header().Get("X-Resin-Error"))
+			}
+			h := tpUpstreamHeaders(t, seen)
+			values := h.Values("X-Forwarded-For")
+			if tc.want == "" && len(values) != 0 {
+				t.Fatalf("X-Forwarded-For = %v, want absent", values)
+			}
+			if tc.want != "" && (len(values) != 1 || values[0] != tc.want) {
+				t.Fatalf("X-Forwarded-For = %v, want [%q]", values, tc.want)
+			}
+			for _, value := range values {
+				if strings.Contains(value, "203.0.113.50") {
+					t.Fatalf("client IP leaked through X-Forwarded-For: %v", values)
+				}
+			}
+		})
+	}
+}
+
+func TestPluginHook_ReverseConnectionCannotRemovePluginHeader(t *testing.T) {
+	hook := &tpFakeHook{fn: func(req *pluginsdk.RequestInfo) RequestHookResult {
+		res := tpEcho(req)
+		res.HeaderOps = []HeaderOp{{Name: "X-Plugin-Header", Value: "kept"}}
+		return res
+	}}
+	rp := tpNewReverse(t, hook, nil)
+	upstream, seen := tpUpstream(t)
+	host := strings.TrimPrefix(upstream.URL, "http://")
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/tok/plat:acct/http/%s/connection", host), nil)
+	req.Header.Set("Connection", "X-Plugin-Header")
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d (body=%q, resinErr=%q)", w.Code, w.Body.String(), w.Header().Get("X-Resin-Error"))
+	}
+	h := tpUpstreamHeaders(t, seen)
+	if got := h.Get("X-Plugin-Header"); got != "kept" {
+		t.Fatalf("plugin header was removed by Connection listing: %q", got)
+	}
+}
+
+func TestPluginHook_ReversePlatformRewriteReappliesAccountPolicy(t *testing.T) {
+	env := newProxyE2EEnv(t)
+	alt := platform.NewPlatform("alt-id", "alt", nil, nil)
+	alt.ReverseProxyEmptyAccountBehavior = string(platform.ReverseProxyEmptyAccountBehaviorFixedHeader)
+	alt.ReverseProxyFixedAccountHeader = "X-Account-Id"
+	alt.ReverseProxyMissAction = string(platform.ReverseProxyMissActionReject)
+	env.pool.RegisterPlatform(alt)
+
+	hook := &tpFakeHook{fn: func(req *pluginsdk.RequestInfo) RequestHookResult {
+		return RequestHookResult{Platform: "alt", Account: ""}
+	}}
+	rp := NewReverseProxy(ReverseProxyConfig{
+		ProxyToken:     "tok",
+		Router:         env.router,
+		Pool:           env.pool,
+		PlatformLookup: env.pool,
+		Health:         &mockHealthRecorder{},
+		Events:         NoOpEventEmitter{},
+		Hooks:          hook,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/tok/plat/http/example.com/path", nil)
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+	if w.Code != ErrAccountRejected.HTTPCode || w.Header().Get("X-Resin-Error") != ErrAccountRejected.ResinError {
+		t.Fatalf("status/error = %d/%q, want %d/%q", w.Code, w.Header().Get("X-Resin-Error"), ErrAccountRejected.HTTPCode, ErrAccountRejected.ResinError)
+	}
+	call := hook.lastCall(t)
+	if call.Platform != "plat" || call.Account != "" {
+		t.Fatalf("hook request identity = %q/%q, want plat/empty", call.Platform, call.Account)
+	}
+}
+
+func TestPluginHook_DefaultPlatformAcrossProxyPaths(t *testing.T) {
+	reject := func(req *pluginsdk.RequestInfo) RequestHookResult {
+		return tpRejectWith(http.StatusForbidden, "stop after inspection", "test.default")(req)
+	}
+
+	t.Run("forward http", func(t *testing.T) {
+		hook := &tpFakeHook{fn: reject}
+		fp, _ := tpNewForward(t, hook, nil)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		req.Header.Set("Proxy-Authorization", basicAuth("", "tok"))
+		w := httptest.NewRecorder()
+		fp.ServeHTTP(w, req)
+		tpAssertPluginReject(t, w, http.StatusForbidden, "PLUGIN_REJECTED", "test.default", "stop after inspection")
+		if got := hook.lastCall(t).Platform; got != "Default" {
+			t.Fatalf("platform = %q, want Default", got)
+		}
+	})
+
+	t.Run("connect", func(t *testing.T) {
+		hook := &tpFakeHook{fn: reject}
+		fp, _ := tpNewForward(t, hook, nil)
+		req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+		req.Host = "example.com:443"
+		req.Header.Set("Proxy-Authorization", basicAuth("", "tok"))
+		w := httptest.NewRecorder()
+		fp.ServeHTTP(w, req)
+		tpAssertPluginReject(t, w, http.StatusForbidden, "PLUGIN_REJECTED", "test.default", "stop after inspection")
+		if got := hook.lastCall(t).Platform; got != "Default" {
+			t.Fatalf("platform = %q, want Default", got)
+		}
+	})
+
+	t.Run("reverse", func(t *testing.T) {
+		hook := &tpFakeHook{fn: reject}
+		rp := tpNewReverse(t, hook, nil)
+		w := httptest.NewRecorder()
+		rp.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tok//http/example.com/path", nil))
+		tpAssertPluginReject(t, w, http.StatusForbidden, "PLUGIN_REJECTED", "test.default", "stop after inspection")
+		if got := hook.lastCall(t).Platform; got != "Default" {
+			t.Fatalf("platform = %q, want Default", got)
+		}
+	})
+
+	t.Run("socks5", func(t *testing.T) {
+		hook := &tpFakeHook{fn: reject}
+		inbound, _ := tpNewSocks5(t, hook, nil)
+		reply, conn, _, done := tpSocks5Connect(t, inbound, "", "tok", "127.0.0.1:9")
+		defer conn.Close()
+		if reply[1] != socks5ReplyNotAllowed {
+			t.Fatalf("REP = 0x%02x, want not allowed", reply[1])
+		}
+		<-done
+		if got := hook.lastCall(t).Platform; got != "Default" {
+			t.Fatalf("platform = %q, want Default", got)
+		}
+	})
+}
+
+func TestPluginHook_ClientCancellationDuringHookIsSilent(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	hook := &tpFakeHook{fn: func(req *pluginsdk.RequestInfo) RequestHookResult {
+		close(started)
+		<-release
+		return RequestHookResult{Canceled: true, Platform: req.Platform, Account: req.Account}
+	}}
+	emitter := newMockEventEmitter()
+	fp, _ := tpNewForward(t, hook, emitter)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	req.Header.Set("Proxy-Authorization", basicAuth("plat", "tok"))
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		fp.ServeHTTP(w, req)
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("hook did not start")
+	}
+	cancel()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request did not finish after cancellation")
+	}
+	if w.Code != http.StatusOK || w.Body.Len() != 0 || w.Header().Get("X-Resin-Error") != "" {
+		t.Fatalf("canceled response = code %d headers %v body %q", w.Code, w.Header(), w.Body.String())
+	}
+	logEv := tpExpectLog(t, emitter)
+	if logEv.ResinError != "" || logEv.HTTPStatus != 0 || !logEv.NetOK {
+		t.Fatalf("canceled request log = %+v", logEv)
 	}
 }
 

@@ -497,6 +497,29 @@ func TestMarketplaceInstallAndUpgrade(t *testing.T) {
 	}
 }
 
+func TestMarketplaceInstallHonorsSourcePrecedence(t *testing.T) {
+	pkg := tiZip(t, tiPackage(tiManifest(t, "acme.demo", "1.0.0", nil), "")...)
+	mk := tiNewMarket(t)
+	mk.set("/first/index.json", http.StatusBadGateway, []byte("first source unavailable"))
+	mk.set("/second/pkg.zip", 0, pkg)
+	mk.setIndex(t, "/second/index.json", Index{SchemaVersion: 1, Plugins: []IndexEntry{{
+		ID: "acme.demo", Version: "1.0.0", Artifacts: []IndexArtifact{tiAnyArtifact("pkg.zip", tiSHA(pkg))},
+	}}})
+	m := tiNewManager(t, ManagerConfig{
+		ExternalEnabled: true,
+		PluginDir:       t.TempDir(),
+		MarketplaceURLs: []string{mk.url("/first/index.json"), mk.url("/second/index.json")},
+		HTTPClient:      mk.srv.Client(),
+	})
+	_, err := m.Install(context.Background(), "acme.demo")
+	if !errors.Is(err, ErrMarketplaceUnavailable) {
+		t.Fatalf("Install error = %v, want ErrMarketplaceUnavailable", err)
+	}
+	if got := mk.hitCount("/second/pkg.zip"); got != 0 {
+		t.Fatalf("lower-priority artifact downloaded %d times", got)
+	}
+}
+
 func TestMarketplaceInstallRejects(t *testing.T) {
 	good := func(t *testing.T) []byte {
 		return tiZip(t, tiPackage(tiManifest(t, "acme.demo", "1.0.0", nil), "")...)
@@ -522,14 +545,14 @@ func TestMarketplaceInstallRejects(t *testing.T) {
 			entry: func(pkg []byte) IndexEntry {
 				return IndexEntry{ID: "acme.demo", Version: "1.0.0", Artifacts: []IndexArtifact{tiAnyArtifact("pkg.zip", "")}}
 			},
-			wantErr: ErrInvalidArgument, wantMsg: "no valid sha256",
+			wantErr: ErrInvalidArgument, wantMsg: "no package for",
 		},
 		{
 			name: "short sha256", id: "acme.demo", pkg: good,
 			entry: func(pkg []byte) IndexEntry {
 				return IndexEntry{ID: "acme.demo", Version: "1.0.0", Artifacts: []IndexArtifact{tiAnyArtifact("pkg.zip", tiSHA(pkg)[:63])}}
 			},
-			wantErr: ErrInvalidArgument, wantMsg: "no valid sha256",
+			wantErr: ErrInvalidArgument, wantMsg: "no package for",
 		},
 		{
 			name: "not listed", id: "acme.missing", pkg: good,
@@ -576,14 +599,14 @@ func TestMarketplaceInstallRejects(t *testing.T) {
 				a.Size = MaxPackageBytes + 1
 				return IndexEntry{ID: "acme.demo", Version: "1.0.0", Artifacts: []IndexArtifact{a}}
 			},
-			wantErr: ErrInvalidArgument, wantMsg: "larger than",
+			wantErr: ErrInvalidArgument, wantMsg: "no package for",
 		},
 		{
 			name: "download 404", id: "acme.demo", pkg: good,
 			entry: func(pkg []byte) IndexEntry {
 				return IndexEntry{ID: "acme.demo", Version: "1.0.0", Artifacts: []IndexArtifact{tiAnyArtifact("missing.zip?sig=secret", tiSHA(pkg))}}
 			},
-			wantMsg: "HTTP 404",
+			wantErr: ErrMarketplaceDownload, wantMsg: "HTTP 404",
 		},
 		{
 			name: "valid digest but not an archive", id: "acme.demo",

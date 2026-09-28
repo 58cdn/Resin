@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
@@ -20,12 +21,20 @@ type instance interface {
 	Close(ctx context.Context) error
 }
 
+// EventSubscriber reports the event patterns currently selected by a plugin
+// configuration. It is read after startup and after every successful Configure.
+type EventSubscriber interface {
+	SubscribedEvents() []string
+}
+
 // builtinInstance adapts an in-process pluginsdk.Plugin.
 type builtinInstance struct {
-	p         pluginsdk.Plugin
-	inspector pluginsdk.RequestInspector
-	events    pluginsdk.EventHandler
-	caps      pluginsdk.Capabilities
+	p          pluginsdk.Plugin
+	inspector  pluginsdk.RequestInspector
+	events     pluginsdk.EventHandler
+	declared   pluginsdk.Capabilities
+	subscriber EventSubscriber
+	caps       atomic.Pointer[pluginsdk.Capabilities]
 }
 
 func startBuiltin(ctx context.Context, b *Builtin, params pluginsdk.RegisterParams) (inst *builtinInstance, err error) {
@@ -47,25 +56,50 @@ func startBuiltin(ctx context.Context, b *Builtin, params pluginsdk.RegisterPara
 		closePlugin(ctx, p)
 		return nil, err
 	}
-	inst = &builtinInstance{p: p}
-	reported := &pluginsdk.Capabilities{}
+	inst = &builtinInstance{p: p, declared: b.Manifest.Capabilities}
 	if ri, ok := p.(pluginsdk.RequestInspector); ok {
 		inst.inspector = ri
-		reported.RequestHook = true
 	}
 	if eh, ok := p.(pluginsdk.EventHandler); ok {
 		inst.events = eh
-		reported.Events = []string{"*"}
 	}
-	inst.caps = effectiveCapabilities(b.Manifest.Capabilities, reported)
+	if sub, ok := p.(EventSubscriber); ok {
+		inst.subscriber = sub
+	}
+	inst.refreshCaps()
 	return inst, nil
 }
 
-func (b *builtinInstance) Capabilities() pluginsdk.Capabilities { return b.caps }
+func (b *builtinInstance) Capabilities() pluginsdk.Capabilities {
+	caps := b.caps.Load()
+	if caps == nil {
+		return pluginsdk.Capabilities{}
+	}
+	return *caps
+}
+
+func (b *builtinInstance) refreshCaps() {
+	reported := &pluginsdk.Capabilities{}
+	if b.inspector != nil {
+		reported.RequestHook = true
+	}
+	if b.events != nil {
+		reported.Events = []string{"*"}
+	}
+	if b.subscriber != nil {
+		reported.Events = append([]string(nil), b.subscriber.SubscribedEvents()...)
+	}
+	caps := effectiveCapabilities(b.declared, reported)
+	b.caps.Store(&caps)
+}
 
 func (b *builtinInstance) Configure(ctx context.Context, config json.RawMessage) (err error) {
 	defer recoverInto(&err)
-	return b.p.Configure(ctx, config)
+	if err = b.p.Configure(ctx, config); err != nil {
+		return err
+	}
+	b.refreshCaps()
+	return nil
 }
 
 func (b *builtinInstance) Inspect(ctx context.Context, req *pluginsdk.RequestInfo) (dec *pluginsdk.RequestDecision, err error) {

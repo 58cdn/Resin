@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/internal/proxy"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
+	"golang.org/x/net/http/httpguts"
 )
 
 // HeaderRewriteID is the id of the header-rewrite builtin.
@@ -46,9 +48,14 @@ type headerRewriteConfig struct {
 	Rules []headerRule `json:"rules"`
 }
 
+type compiledHeaderValue struct {
+	value     string
+	templated bool
+}
+
 type compiledHeaderRule struct {
 	match  compiledMatch
-	set    map[string]string
+	set    map[string]compiledHeaderValue
 	remove []string
 }
 
@@ -68,16 +75,16 @@ func (h *headerRewrite) Configure(_ context.Context, config json.RawMessage) err
 		if err != nil {
 			return err
 		}
-		cr := compiledHeaderRule{match: m, set: make(map[string]string, len(r.Set))}
+		cr := compiledHeaderRule{match: m, set: make(map[string]compiledHeaderValue, len(r.Set))}
 		for name, value := range r.Set {
 			key := http.CanonicalHeaderKey(strings.TrimSpace(name))
 			if err := checkHeaderName(where+".set", key); err != nil {
 				return err
 			}
-			if strings.ContainsAny(value, "\r\n\x00") {
-				return fmt.Errorf("%s.set[%s]: value contains control characters", where, key)
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return fmt.Errorf("%s.set[%s]: invalid header value", where, key)
 			}
-			cr.set[key] = value
+			cr.set[key] = compiledHeaderValue{value: value, templated: strings.Contains(value, "${")}
 		}
 		for _, name := range r.Remove {
 			key := http.CanonicalHeaderKey(strings.TrimSpace(name))
@@ -96,13 +103,22 @@ func (h *headerRewrite) Configure(_ context.Context, config json.RawMessage) err
 }
 
 func checkHeaderName(where, key string) error {
-	if key == "" || strings.ContainsAny(key, " \t\r\n:") {
+	if !httpguts.ValidHeaderFieldName(key) {
 		return fmt.Errorf("%s: invalid header name %q", where, key)
 	}
 	if proxy.IsProtectedHookHeader(key) {
 		return fmt.Errorf("%s: header %s cannot be rewritten", where, key)
 	}
 	return nil
+}
+
+func sanitizeHeaderTemplateValue(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, value)
 }
 
 func (h *headerRewrite) InspectRequest(_ context.Context, req *pluginsdk.RequestInfo) (*pluginsdk.RequestDecision, error) {
@@ -112,25 +128,34 @@ func (h *headerRewrite) InspectRequest(_ context.Context, req *pluginsdk.Request
 	}
 	var dec *pluginsdk.RequestDecision
 	var replacer *strings.Replacer
+	newReplacer := func() *strings.Replacer {
+		if replacer == nil {
+			replacer = strings.NewReplacer(
+				"${account}", sanitizeHeaderTemplateValue(req.Account),
+				"${platform}", sanitizeHeaderTemplateValue(req.Platform),
+				"${client_ip}", sanitizeHeaderTemplateValue(req.ClientIP),
+				"${target_host}", sanitizeHeaderTemplateValue(req.TargetHost),
+			)
+		}
+		return replacer
+	}
 	for _, r := range *rules {
 		if !r.match.match(req.ProxyType, req.ClientIP, req.Platform, req.Account, req.TargetHost) {
 			continue
 		}
 		if dec == nil {
 			dec = &pluginsdk.RequestDecision{SetHeaders: map[string]string{}}
-			replacer = strings.NewReplacer(
-				"${account}", req.Account,
-				"${platform}", req.Platform,
-				"${client_ip}", req.ClientIP,
-				"${target_host}", req.TargetHost,
-			)
 		}
 		for _, name := range r.remove {
 			delete(dec.SetHeaders, name)
 			dec.RemoveHeaders = append(dec.RemoveHeaders, name)
 		}
 		for name, value := range r.set {
-			dec.SetHeaders[name] = strings.NewReplacer("\r", "", "\n", "").Replace(replacer.Replace(value))
+			if value.templated {
+				dec.SetHeaders[name] = newReplacer().Replace(value.value)
+			} else {
+				dec.SetHeaders[name] = value.value
+			}
 		}
 	}
 	return dec, nil

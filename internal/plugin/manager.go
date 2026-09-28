@@ -165,6 +165,11 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 5 * time.Minute}
 	}
+	if cfg.PluginDir != "" {
+		if abs, err := filepath.Abs(cfg.PluginDir); err == nil {
+			cfg.PluginDir = abs
+		}
+	}
 	m := &Manager{
 		cfg:      cfg,
 		entries:  make(map[string]*entry),
@@ -507,7 +512,9 @@ func (it chainItem) call(ctx context.Context, req *pluginsdk.RequestInfo) (*plug
 	callCtx, cancel := context.WithTimeout(ctx, it.timeout)
 	start := time.Now()
 	dec, err := it.inst.Inspect(callCtx, req)
-	if err == nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	} else if err == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		// In-process plugins are not preempted; treat a late answer as a timeout.
 		err = callCtx.Err()
 	}
@@ -865,14 +872,17 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 
 	startedNew := false
 	reconfigured := false
+	wasEnabled := e.settings.Enabled
+	enableTransition := !wasEnabled && next.Enabled
+	changeCtx := context.WithoutCancel(ctx)
 	switch {
-	case next.Enabled && e.inst == nil:
-		if err := m.startEntry(ctx, e, newConfig); err != nil {
+	case next.Enabled && e.inst == nil && (enableTransition || configChanged):
+		if err := m.startEntry(changeCtx, e, newConfig); err != nil {
 			return Info{}, fmt.Errorf("%w: %v", ErrStartFailed, err)
 		}
 		startedNew = true
 	case next.Enabled && configChanged:
-		if err := m.configure(ctx, e, newConfig); err != nil {
+		if err := m.configure(changeCtx, e, newConfig); err != nil {
 			if configRejected(e, err) {
 				return Info{}, fmt.Errorf("%w: plugin rejected config: %v", ErrInvalidArgument, err)
 			}
@@ -885,7 +895,7 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 	case !next.Enabled && configChanged && e.builtin != nil:
 		// Validate against a throwaway instance so bad configs are caught
 		// before the plugin is enabled.
-		cctx, cancel := context.WithTimeout(ctx, configureTimeout)
+		cctx, cancel := context.WithTimeout(changeCtx, configureTimeout)
 		probe, err := startBuiltin(cctx, e.builtin, pluginsdk.RegisterParams{
 			SchemaVersion: pluginsdk.SchemaVersion, ResinVersion: m.cfg.ResinVersion,
 			PluginID: id, DataDir: m.dataDir(id), Config: newConfig,
@@ -894,7 +904,7 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 		if err != nil {
 			return Info{}, fmt.Errorf("%w: plugin rejected config: %v", ErrInvalidArgument, err)
 		}
-		_ = probe.Close(ctx)
+		_ = probe.Close(changeCtx)
 	}
 
 	now := time.Now().UnixNano()
@@ -906,9 +916,9 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 		if err := m.cfg.Store.UpsertPluginSettings(next); err != nil {
 			switch {
 			case startedNew:
-				m.stopEntry(ctx, e)
+				m.stopEntry(changeCtx, e)
 			case reconfigured:
-				if cerr := m.configure(ctx, e, prevConfig); cerr != nil {
+				if cerr := m.configure(changeCtx, e, prevConfig); cerr != nil {
 					m.cfg.Logf("[plugin] %s: restoring the previous config failed: %v; restarting it", id, cerr)
 					m.restartEntry(ctx, e, prevConfig)
 				}
@@ -920,13 +930,13 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 	e.config = newConfig
 	m.stored[id] = next
 	if !next.Enabled && e.inst != nil {
-		m.stopEntry(ctx, e)
+		m.stopEntry(changeCtx, e)
 	}
 	if !next.Enabled {
 		e.setState(StatusStopped, "")
 	}
 	// A builtin's event subscription can depend on its config.
-	m.syncEventQueue(ctx, e)
+	m.syncEventQueue(changeCtx, e)
 	m.rebuildChain()
 	return m.info(e), nil
 }
@@ -943,7 +953,7 @@ func (m *Manager) configure(ctx context.Context, e *entry, config json.RawMessag
 func configRejected(e *entry, err error) bool {
 	var rpcErr *rpcError
 	if errors.As(err, &rpcErr) {
-		return true
+		return !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 	}
 	return e.builtin != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 }
@@ -1021,6 +1031,7 @@ func (m *Manager) Rescan(ctx context.Context) ([]Info, error) {
 	if m.stopped {
 		return nil, fmt.Errorf("%w: plugin manager is stopped", ErrConflict)
 	}
+	changeCtx := context.WithoutCancel(ctx)
 	if m.cfg.ExternalEnabled {
 		found := make(map[string]*entry)
 		for _, e := range m.discoverPackages() {
@@ -1044,12 +1055,12 @@ func (m *Manager) Rescan(ctx context.Context) ([]Info, error) {
 			m.entries[id] = e
 		}
 		for _, old := range stale {
-			m.stopEntry(ctx, old)
+			m.stopEntry(changeCtx, old)
 		}
 	}
 	for _, e := range m.entries {
 		if e.settings.Enabled && e.inst == nil {
-			_ = m.startEntry(ctx, e, e.config)
+			_ = m.startEntry(changeCtx, e, e.config)
 		}
 	}
 	m.rebuildChain()

@@ -76,6 +76,7 @@ func (m *Manager) installArchive(ctx context.Context, data []byte, expectedID st
 		_ = os.Chmod(full, 0o755)
 	}
 
+	changeCtx := context.WithoutCancel(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stopped {
@@ -85,39 +86,56 @@ func (m *Manager) installArchive(ctx context.Context, data []byte, expectedID st
 	dest := filepath.Join(m.cfg.PluginDir, id)
 	old := m.entries[id]
 	if old != nil {
-		m.stopEntry(ctx, old)
+		m.stopEntry(changeCtx, old)
 	}
 
 	backup := ""
-	if _, err := os.Stat(dest); err == nil {
+	if _, statErr := os.Stat(dest); statErr == nil {
 		backup = filepath.Join(m.cfg.PluginDir, fmt.Sprintf(".old-%s-%d", id, time.Now().UnixNano()))
 		if err := os.Rename(dest, backup); err != nil {
-			m.restoreOld(ctx, old)
+			if restoreErr := m.restoreOld(changeCtx, old); restoreErr != nil {
+				return Info{}, fmt.Errorf("replace existing package: %w (restore old plugin: %v)", err, restoreErr)
+			}
 			return Info{}, fmt.Errorf("replace existing package: %w", err)
 		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return Info{}, fmt.Errorf("inspect existing package: %w", statErr)
 	}
 	if err := os.Rename(root, dest); err != nil {
 		if backup != "" {
-			_ = os.Rename(backup, dest)
+			if restoreErr := os.Rename(backup, dest); restoreErr != nil {
+				return Info{}, fmt.Errorf("activate package: %w (restore backup %q: %v)", err, backup, restoreErr)
+			}
 		}
-		m.restoreOld(ctx, old)
+		if restoreErr := m.restoreOld(changeCtx, old); restoreErr != nil {
+			return Info{}, fmt.Errorf("activate package: %w (restore old plugin: %v)", err, restoreErr)
+		}
 		return Info{}, fmt.Errorf("activate package: %w", err)
 	}
 
 	e := m.loadPackage(id)
 	if e.settings.Enabled {
-		if err := m.startEntry(ctx, e, e.config); err != nil {
-			// Roll back to the previous version.
-			_ = os.RemoveAll(dest)
-			if backup != "" {
-				_ = os.Rename(backup, dest)
+		if err := m.startEntry(changeCtx, e, e.config); err != nil {
+			// Roll back to the previous version. Never restart the old entry
+			// until the new directory has been removed and the backup restored.
+			if removeErr := os.RemoveAll(dest); removeErr != nil {
+				return Info{}, fmt.Errorf("%w: %v (rollback remove %q: %v; backup retained)", ErrStartFailed, err, dest, removeErr)
 			}
-			m.restoreOld(ctx, old)
+			if backup != "" {
+				if restoreErr := os.Rename(backup, dest); restoreErr != nil {
+					return Info{}, fmt.Errorf("%w: %v (rollback restore %q: %v; backup retained)", ErrStartFailed, err, backup, restoreErr)
+				}
+			}
+			if restoreErr := m.restoreOld(changeCtx, old); restoreErr != nil {
+				return Info{}, fmt.Errorf("%w: %v (restore old plugin: %v)", ErrStartFailed, err, restoreErr)
+			}
 			return Info{}, fmt.Errorf("%w: %v", ErrStartFailed, err)
 		}
 	}
 	if backup != "" {
-		_ = os.RemoveAll(backup)
+		if err := os.RemoveAll(backup); err != nil {
+			m.cfg.Logf("[plugin] remove upgrade backup %s: %v", backup, err)
+		}
 	}
 	m.entries[id] = e
 	m.rebuildChain()
@@ -126,14 +144,19 @@ func (m *Manager) installArchive(ctx context.Context, data []byte, expectedID st
 }
 
 // restoreOld restarts a previously running entry after a failed upgrade.
-func (m *Manager) restoreOld(ctx context.Context, old *entry) {
+func (m *Manager) restoreOld(ctx context.Context, old *entry) error {
+	ctx = context.WithoutCancel(ctx)
 	if old == nil {
-		return
+		return nil
 	}
 	if old.settings.Enabled && old.inst == nil {
-		_ = m.startEntry(ctx, old, old.config)
+		if err := m.startEntry(ctx, old, old.config); err != nil {
+			m.rebuildChain()
+			return err
+		}
 	}
 	m.rebuildChain()
+	return nil
 }
 
 // packageRoot finds plugin.json at the archive root or inside a single
@@ -200,6 +223,28 @@ func (b *extractBudget) addFile() error {
 	return nil
 }
 
+func looksExecutableHeader(header []byte) bool {
+	return bytes.HasPrefix(header, []byte("#!")) ||
+		bytes.HasPrefix(header, []byte{0x7f, 'E', 'L', 'F'}) ||
+		bytes.HasPrefix(header, []byte("MZ")) ||
+		bytes.HasPrefix(header, []byte{0xfe, 0xed, 0xfa, 0xce}) ||
+		bytes.HasPrefix(header, []byte{0xce, 0xfa, 0xed, 0xfe}) ||
+		bytes.HasPrefix(header, []byte{0xfe, 0xed, 0xfa, 0xcf}) ||
+		bytes.HasPrefix(header, []byte{0xcf, 0xfa, 0xed, 0xfe})
+}
+
+func detectExecutable(r io.Reader, executable, detectHeader bool) (io.Reader, bool, error) {
+	if executable || !detectHeader {
+		return r, executable, nil
+	}
+	header := make([]byte, 4)
+	n, err := io.ReadFull(r, header)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, false, err
+	}
+	return io.MultiReader(bytes.NewReader(header[:n]), r), looksExecutableHeader(header[:n]), nil
+}
+
 func writeExtracted(full string, r io.Reader, executable bool, budget *extractBudget) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
@@ -258,10 +303,16 @@ func extractZip(data []byte, dest string) error {
 			if err != nil {
 				return err
 			}
-			err = writeExtracted(full, rc, mode&0o111 != 0, budget)
-			rc.Close()
-			if err != nil {
-				return err
+			reader, executable, detectErr := detectExecutable(rc, mode&0o111 != 0, mode.Perm() == 0)
+			if detectErr == nil {
+				detectErr = writeExtracted(full, reader, executable, budget)
+			}
+			closeErr := rc.Close()
+			if detectErr != nil {
+				return detectErr
+			}
+			if closeErr != nil {
+				return closeErr
 			}
 		default:
 			return fmt.Errorf("unsupported entry %q (links and special files are not allowed)", f.Name)
@@ -305,7 +356,11 @@ func extractTarGz(data []byte, dest string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := writeExtracted(full, tr, hdr.Mode&0o111 != 0, budget); err != nil {
+			reader, executable, detectErr := detectExecutable(tr, hdr.Mode&0o111 != 0, hdr.Mode&0o777 == 0)
+			if detectErr != nil {
+				return detectErr
+			}
+			if err := writeExtracted(full, reader, executable, budget); err != nil {
 				return err
 			}
 		default:

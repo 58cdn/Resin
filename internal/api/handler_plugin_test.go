@@ -181,7 +181,7 @@ func TestPluginAPI_PatchValidation(t *testing.T) {
 		{"timeout out of range", builtin.AccessControlID, `{"timeout_ms":1}`, http.StatusBadRequest, "INVALID_ARGUMENT", "timeout_ms must be between 10 and 60000"},
 		{"config field wrong type", builtin.AccessControlID, `{"config":{"reject_status":"x"}}`, http.StatusBadRequest, "INVALID_ARGUMENT", "config.reject_status: must be an integer"},
 		{"plugin rejects config", builtin.AccessControlID, `{"config":{"rules":[{"action":"block"}]}}`, http.StatusBadRequest, "INVALID_ARGUMENT", "plugin rejected config"},
-		{"enable fails to start", builtin.WebhookID, `{"enabled":true}`, http.StatusBadRequest, "INVALID_ARGUMENT", "plugin failed to start"},
+		{"enable fails to start", builtin.WebhookID, `{"enabled":true}`, http.StatusBadRequest, "INVALID_ARGUMENT", "config.url: required"},
 		{"unknown plugin", "no.such.plugin", `{"enabled":true}`, http.StatusNotFound, "NOT_FOUND", "plugin not found"},
 	}
 	for _, tc := range cases {

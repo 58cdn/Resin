@@ -586,7 +586,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 	log.Println("GeoIP service stopped")
 
 	// 2. Stop observability sinks (flush remaining data).
-	a.plugins.Stop(ctx)
+	// Plugin event queues need an independent shutdown budget because the
+	// endpoint shutdown above may already have consumed the caller's context.
+	pluginCtx, pluginCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	a.plugins.Stop(pluginCtx)
+	pluginCancel()
 	log.Println("Plugins stopped")
 
 	a.requestlogSvc.Stop()

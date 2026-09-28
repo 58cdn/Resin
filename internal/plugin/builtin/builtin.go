@@ -3,13 +3,16 @@
 package builtin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"strings"
 
 	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/internal/proxy"
+	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
 // All returns every builtin plugin.
@@ -73,10 +76,10 @@ func (m matchSet) compile(where string) (compiledMatch, error) {
 		for _, t := range m.ProxyTypes {
 			t = strings.ToLower(strings.TrimSpace(t))
 			switch t {
-			case "forward", "reverse", "socks5":
+			case pluginsdk.ProxyTypeForward, pluginsdk.ProxyTypeReverse, pluginsdk.ProxyTypeSocks5:
 				out.proxyTypes[t] = true
 			default:
-				return out, fmt.Errorf("%s.proxy_types: unknown proxy type %q (forward, reverse, socks5)", where, t)
+				return out, fmt.Errorf("%s.proxy_types: unknown proxy type %q (%s, %s, %s)", where, t, pluginsdk.ProxyTypeForward, pluginsdk.ProxyTypeReverse, pluginsdk.ProxyTypeSocks5)
 			}
 		}
 	}
@@ -92,7 +95,7 @@ func (c compiledMatch) match(proxyType, clientIP, platform, account, host string
 		if err != nil {
 			return false
 		}
-		addr = addr.Unmap()
+		addr = addr.WithZone("").Unmap()
 		ok := false
 		for _, p := range c.cidrs {
 			if p.Contains(addr) {
@@ -154,7 +157,16 @@ func decodeConfig(config json.RawMessage, v any) error {
 	if len(config) == 0 {
 		config = raw(`{}`)
 	}
-	if err := json.Unmarshal(config, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("invalid config: multiple JSON values")
+		}
 		return fmt.Errorf("invalid config: %w", err)
 	}
 	return nil

@@ -652,6 +652,17 @@ type rpcError struct {
 
 func (e *rpcError) Error() string { return "plugin error: " + e.Message }
 
+func (e *rpcError) Unwrap() error {
+	switch e.Message {
+	case context.Canceled.Error():
+		return context.Canceled
+	case context.DeadlineExceeded.Error():
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func readProtocolLine(r *bufio.Reader) ([]byte, error) {
 	var buf []byte
 	for {

@@ -32,6 +32,7 @@ import (
 //	echo_env      like reject, and include environment details
 //	crash_once    exit without replying to the first request ever made
 //	slow          sleep 400ms before answering requests for account "slow"
+//	slow_config   sleep until Configure context expires when msg is "slow"
 //	bad_register  fail plugin.register (Configure always errors)
 //	stall         answer plugin.register, then never read stdin again
 //	orphan        on the first request ever made, start a child that inherits
@@ -147,7 +148,19 @@ func (p *tmHelperPlugin) Init(_ context.Context, params pluginsdk.RegisterParams
 	return nil
 }
 
-func (p *tmHelperPlugin) Configure(_ context.Context, raw json.RawMessage) error {
+func (p *tmHelperPlugin) Configure(ctx context.Context, raw json.RawMessage) error {
+	if p.mode == "slow_config" {
+		var cfg struct {
+			Msg string `json:"msg"`
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return err
+		}
+		if cfg.Msg == "slow" {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	}
 	if p.mode == "bad_register" {
 		return errors.New("helper refuses to register")
 	}
@@ -530,6 +543,25 @@ func TestProcessHotConfigure(t *testing.T) {
 	}
 	if st := tmGet(t, p.m, tmProcID).Stats; st.Restarts != 0 {
 		t.Fatalf("restarts = %d; hot configure and re-enable are not crash restarts", st.Restarts)
+	}
+}
+
+func TestProcessConfigureTimeoutRestartsWithPreviousConfig(t *testing.T) {
+	p := tmProcSetup(t, "slow_config", nil)
+	tmEnable(t, p.m, tmProcID, Update{Config: json.RawMessage(`{"msg":"v1"}`)})
+	before := tmDecodeEcho(t, p.inspect("acct"))
+
+	_, err := p.m.Update(context.Background(), tmProcID, Update{Config: json.RawMessage(`{"msg":"slow"}`)})
+	if err == nil || !strings.Contains(err.Error(), "restarted with the previous config") {
+		t.Fatalf("slow configure err = %v, want restart error", err)
+	}
+	got := tmDecodeEcho(t, p.inspect("acct"))
+	if got.Msg != "v1" || got.PID == before.PID {
+		t.Fatalf("after configure timeout = %+v, want previous config in a new process (old pid %d)", got, before.PID)
+	}
+	info := tmGet(t, p.m, tmProcID)
+	if string(info.Config) != `{"msg":"v1"}` || info.Status != StatusRunning {
+		t.Fatalf("state after configure timeout = %+v", info)
 	}
 }
 

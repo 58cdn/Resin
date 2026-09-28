@@ -75,6 +75,8 @@ type IndexArtifact struct {
 type MarketplaceError struct {
 	URL   string `json:"url"`
 	Error string `json:"error"`
+
+	sourceIndex int
 }
 
 // MarketplaceListing is the merged view of every configured marketplace.
@@ -96,12 +98,12 @@ func (m *Manager) Marketplace(ctx context.Context) (MarketplaceListing, error) {
 		Errors:  []MarketplaceError{},
 	}
 	seen := make(map[string]bool)
-	for _, src := range m.cfg.MarketplaceURLs {
+	for sourceIndex, src := range m.cfg.MarketplaceURLs {
 		shown := RedactURL(src)
 		listing.Sources = append(listing.Sources, shown)
 		idx, err := m.fetchIndex(ctx, src)
 		if err != nil {
-			listing.Errors = append(listing.Errors, MarketplaceError{URL: shown, Error: err.Error()})
+			listing.Errors = append(listing.Errors, MarketplaceError{URL: shown, Error: err.Error(), sourceIndex: sourceIndex})
 			continue
 		}
 		for _, ie := range idx.Plugins {
@@ -109,7 +111,18 @@ func (m *Manager) Marketplace(ctx context.Context) (MarketplaceListing, error) {
 				continue
 			}
 			seen[ie.ID] = true
-			listing.Plugins = append(listing.Plugins, MarketplaceEntry{IndexEntry: ie, Marketplace: shown})
+			rawArtifacts := append([]IndexArtifact(nil), ie.Artifacts...)
+			shownEntry := ie
+			shownEntry.Artifacts = append([]IndexArtifact(nil), ie.Artifacts...)
+			for i := range shownEntry.Artifacts {
+				shownEntry.Artifacts[i].URL = RedactURL(shownEntry.Artifacts[i].URL)
+			}
+			listing.Plugins = append(listing.Plugins, MarketplaceEntry{
+				IndexEntry:   shownEntry,
+				Marketplace:  shown,
+				sourceIndex:  sourceIndex,
+				rawArtifacts: rawArtifacts,
+			})
 		}
 	}
 
@@ -183,6 +196,9 @@ func (m *Manager) fetchIndex(ctx context.Context, src string) (*Index, error) {
 			a.OS = strings.ToLower(strings.TrimSpace(a.OS))
 			a.Arch = strings.ToLower(strings.TrimSpace(a.Arch))
 			a.SHA256 = strings.ToLower(strings.TrimSpace(a.SHA256))
+			if !validArtifact(a) {
+				continue
+			}
 			arts = append(arts, a)
 		}
 		ie.Artifacts = arts
@@ -256,6 +272,11 @@ func pickArtifact(arts []IndexArtifact, goos, goarch string) (IndexArtifact, boo
 	return best, bestScore > 0
 }
 
+func validArtifact(a IndexArtifact) bool {
+	decoded, err := hex.DecodeString(a.SHA256)
+	return err == nil && len(decoded) == sha256.Size && a.Size >= 0 && a.Size <= MaxPackageBytes
+}
+
 // Install downloads a plugin from the marketplace and installs (or upgrades)
 // it. An upgraded plugin keeps its settings and is restarted if enabled.
 func (m *Manager) Install(ctx context.Context, id string) (Info, error) {
@@ -274,21 +295,30 @@ func (m *Manager) Install(ctx context.Context, id string) (Info, error) {
 		}
 	}
 	if target == nil {
+		if len(listing.Errors) > 0 {
+			return Info{}, fmt.Errorf("%w: %s is not listed because one or more marketplace indexes are unavailable", ErrMarketplaceUnavailable, id)
+		}
 		return Info{}, fmt.Errorf("%w: %s is not listed by any marketplace", ErrNotFound, id)
+	}
+	for _, sourceErr := range listing.Errors {
+		if sourceErr.sourceIndex < target.sourceIndex {
+			return Info{}, fmt.Errorf("%w: marketplace source %q is unavailable: %s", ErrMarketplaceUnavailable, sourceErr.URL, sourceErr.Error)
+		}
 	}
 	if !target.Installable {
 		return Info{}, fmt.Errorf("%w: %s", ErrInvalidArgument, target.Reason)
 	}
-	art, _ := pickArtifact(target.Artifacts, runtime.GOOS, runtime.GOARCH)
-	if len(art.SHA256) != sha256.Size*2 {
-		return Info{}, fmt.Errorf("%w: marketplace artifact for %s has no valid sha256", ErrInvalidArgument, id)
+	artifacts := target.rawArtifacts
+	if len(artifacts) == 0 {
+		artifacts = target.Artifacts
 	}
-	if art.Size > MaxPackageBytes {
-		return Info{}, fmt.Errorf("%w: package is larger than %d bytes", ErrInvalidArgument, MaxPackageBytes)
+	art, ok := pickArtifact(artifacts, runtime.GOOS, runtime.GOARCH)
+	if !ok || !validArtifact(art) {
+		return Info{}, fmt.Errorf("%w: marketplace artifact for %s has no valid sha256", ErrInvalidArgument, id)
 	}
 	data, err := m.httpGet(ctx, art.URL, MaxPackageBytes)
 	if err != nil {
-		return Info{}, fmt.Errorf("download: %w", err)
+		return Info{}, fmt.Errorf("%w: %v", ErrMarketplaceDownload, err)
 	}
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != art.SHA256 {

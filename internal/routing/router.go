@@ -239,11 +239,12 @@ func (r *Router) createOrAbortStickyLease(
 	r.cleanupPreviousLease(state, previous, hadPreviousLease, invalidation, plat.ID, account)
 	state.IPLoadStats.Inc(newLease.EgressIP)
 	r.emitLeaseEvent(LeaseEvent{
-		Type:       LeaseCreate,
-		PlatformID: plat.ID,
-		Account:    account,
-		NodeHash:   newLease.NodeHash,
-		EgressIP:   newLease.EgressIP,
+		Type:        LeaseCreate,
+		PlatformID:  plat.ID,
+		Account:     account,
+		NodeHash:    newLease.NodeHash,
+		EgressIP:    newLease.EgressIP,
+		CreatedAtNs: newLease.CreatedAtNs,
 	})
 	return newLease, xsync.UpdateOp, createdResult, nil
 }
@@ -298,11 +299,12 @@ func (r *Router) tryLeaseSameIPRotation(
 	newLease.NodeHash = bestHash
 	newLease.LastAccessedNs = nowNs
 	r.emitLeaseEvent(LeaseEvent{
-		Type:       LeaseReplace,
-		PlatformID: plat.ID,
-		Account:    account,
-		NodeHash:   bestHash,
-		EgressIP:   current.EgressIP,
+		Type:        LeaseReplace,
+		PlatformID:  plat.ID,
+		Account:     account,
+		NodeHash:    bestHash,
+		EgressIP:    current.EgressIP,
+		CreatedAtNs: newLease.CreatedAtNs,
 	})
 	return newLease, RouteResult{
 		NodeHash:     bestHash,
@@ -528,11 +530,12 @@ func (r *Router) UpsertLease(ml model.Lease) error {
 	})
 
 	r.emitLeaseEvent(LeaseEvent{
-		Type:       eventType,
-		PlatformID: platformID,
-		Account:    account,
-		NodeHash:   lease.NodeHash,
-		EgressIP:   lease.EgressIP,
+		Type:        eventType,
+		PlatformID:  platformID,
+		Account:     account,
+		NodeHash:    lease.NodeHash,
+		EgressIP:    lease.EgressIP,
+		CreatedAtNs: lease.CreatedAtNs,
 	})
 	return nil
 }

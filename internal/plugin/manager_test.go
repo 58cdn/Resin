@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -25,6 +26,25 @@ import (
 // --- test helpers (prefix tm) ---
 
 func tmPtr[T any](v T) *T { return &v }
+
+type tmNoopInstance struct {
+	closeFn func(context.Context) error
+}
+
+func (i *tmNoopInstance) Capabilities() pluginsdk.Capabilities {
+	return pluginsdk.Capabilities{RequestHook: true}
+}
+func (i *tmNoopInstance) Configure(context.Context, json.RawMessage) error { return nil }
+func (i *tmNoopInstance) Inspect(context.Context, *pluginsdk.RequestInfo) (*pluginsdk.RequestDecision, error) {
+	return nil, nil
+}
+func (i *tmNoopInstance) HandleEvents(context.Context, []pluginsdk.Event) error { return nil }
+func (i *tmNoopInstance) Close(ctx context.Context) error {
+	if i.closeFn != nil {
+		return i.closeFn(ctx)
+	}
+	return nil
+}
 
 // tmStore is an in-memory SettingsStore.
 type tmStore struct {
@@ -579,14 +599,19 @@ func TestManagerUpdateConfigValidation(t *testing.T) {
 		{"malformed", `{"name":`},
 		{"wrong field type", `{"name":"x","count":1.5}`},
 		{"bad enum", `{"name":"x","mode":"c"}`},
-		{"missing required", `{"count":1}`},
-		{"required null", `{"name":null}`},
+		{"missing required", `{"name":"x","count":1}`},
+		{"required null", `{"name":"x","required_no_default":null}`},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &tmSpec{}
 			st := tmNewStore()
-			m := tmStartManager(t, ManagerConfig{Store: st, Builtins: []Builtin{tmHook("test.a", s, fields...)}})
+			fieldsForCase := fields
+			if tc.name == "missing required" || tc.name == "required null" {
+				fieldsForCase = append(append([]pluginsdk.ConfigField(nil), fields...),
+					pluginsdk.ConfigField{Name: "required_no_default", Type: pluginsdk.FieldString, Required: true})
+			}
+			m := tmStartManager(t, ManagerConfig{Store: st, Builtins: []Builtin{tmHook("test.a", s, fieldsForCase...)}})
 			_, err := m.Update(context.Background(), "test.a", Update{Config: json.RawMessage(tc.config)})
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("err = %v, want ErrInvalidArgument", err)
@@ -602,6 +627,21 @@ func TestManagerUpdateConfigValidation(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("required field default is applied", func(t *testing.T) {
+		s := &tmSpec{}
+		st := tmNewStore()
+		m := tmStartManager(t, ManagerConfig{Store: st, Builtins: []Builtin{tmHook("test.defaults", s,
+			pluginsdk.ConfigField{Name: "required_default", Type: pluginsdk.FieldString, Required: true, Default: json.RawMessage(`"fallback"`)},
+		)}})
+		info := tmUpdate(t, m, "test.defaults", Update{Config: json.RawMessage(`{}`)})
+		if string(info.Config) != `{"required_default":"fallback"}` {
+			t.Fatalf("config = %s, want default-filled config", info.Config)
+		}
+		if row, _ := st.row("test.defaults"); row.ConfigJSON != `{"required_default":"fallback"}` {
+			t.Fatalf("stored config = %s, want default-filled config", row.ConfigJSON)
+		}
+	})
 
 	t.Run("valid config is compacted and probed", func(t *testing.T) {
 		s := &tmSpec{}
@@ -746,6 +786,25 @@ func TestManagerUpdateBuiltinStartPanics(t *testing.T) {
 				t.Fatalf("state = %+v", got)
 			}
 		})
+	}
+}
+
+func TestManagerFailClosedStartupFailurePublishesPlaceholder(t *testing.T) {
+	manifest := tmHook("test.a", &tmSpec{}).Manifest
+	store := tmNewStore(model.PluginSettings{ID: "test.a", Enabled: true, FailClosed: true, ConfigJSON: `{}`})
+	m := tmStartManager(t, ManagerConfig{
+		Store: store,
+		Builtins: []Builtin{{
+			Manifest: manifest,
+			New:      func() pluginsdk.Plugin { panic("startup exploded") },
+		}},
+	})
+	res := tmInspect(m)
+	if res.Reject == nil || res.Reject.HTTPCode != http.StatusServiceUnavailable || res.Reject.ResinError != "PLUGIN_ERROR" || res.PluginID != "test.a" {
+		t.Fatalf("startup failure result = %+v, want fail-closed 503 placeholder", res)
+	}
+	if got := tmGet(t, m, "test.a"); !got.Enabled || got.Status != StatusError {
+		t.Fatalf("plugin status = %+v, want enabled error", got)
 	}
 }
 
@@ -1121,6 +1180,7 @@ func TestManagerHeaderOpsWithoutHeaders(t *testing.T) {
 		req     *pluginsdk.RequestInfo
 		wantOps int
 	}{
+		{"connect with headers", &pluginsdk.RequestInfo{ProxyType: pluginsdk.ProxyTypeForward, IsConnect: true, Headers: map[string][]string{"X-Client": {"v"}}}, 0},
 		{"connect", &pluginsdk.RequestInfo{ProxyType: pluginsdk.ProxyTypeForward, IsConnect: true}, 0},
 		{"socks5", &pluginsdk.RequestInfo{ProxyType: pluginsdk.ProxyTypeSocks5, IsConnect: true}, 0},
 		{"reverse without headers", &pluginsdk.RequestInfo{ProxyType: pluginsdk.ProxyTypeReverse}, 2},
@@ -1131,7 +1191,7 @@ func TestManagerHeaderOpsWithoutHeaders(t *testing.T) {
 		if len(res.HeaderOps) != tc.wantOps {
 			t.Fatalf("%s: ops = %+v, want %d", tc.name, res.HeaderOps, tc.wantOps)
 		}
-		if tc.wantOps == 0 && tc.req.Headers != nil {
+		if tc.wantOps == 0 && tc.req.Headers != nil && tc.name != "connect with headers" {
 			t.Fatalf("%s: headers map created: %v", tc.name, tc.req.Headers)
 		}
 		if tc.wantOps > 0 && !reflect.DeepEqual(tc.req.Headers, map[string][]string{"X-A": {"1"}}) {
@@ -1305,16 +1365,17 @@ func TestManagerTimeouts(t *testing.T) {
 		})
 	}
 
-	t.Run("canceled parent context counts as error", func(t *testing.T) {
+	t.Run("canceled parent context is not counted as an error", func(t *testing.T) {
 		m := tmStartManager(t, ManagerConfig{Builtins: []Builtin{tmHook("test.a", &tmSpec{inspect: honorsCtx})}})
 		tmEnable(t, m, "test.a", Update{})
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if res := m.InspectRequest(ctx, tmRequest()); res.Reject != nil {
-			t.Fatalf("result = %+v", res)
+		res := m.InspectRequest(ctx, tmRequest())
+		if !res.Canceled || res.Reject != nil {
+			t.Fatalf("result = %+v, want canceled without rejection", res)
 		}
-		if st := tmGet(t, m, "test.a").Stats; st.Errors != 1 || st.Timeouts != 0 {
-			t.Fatalf("stats = %+v", st)
+		if st := tmGet(t, m, "test.a").Stats; st.Errors != 0 || st.Timeouts != 0 {
+			t.Fatalf("stats = %+v, want no errors or timeouts", st)
 		}
 	})
 
@@ -1520,9 +1581,9 @@ func TestManagerEventsDelivery(t *testing.T) {
 	})
 	hash := node.HashFromRawOptions([]byte(`{"type":"direct"}`))
 	createdNs := time.Unix(1_600_000_000, 0).UnixNano()
-	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseCreate, PlatformID: "p1", Account: "acct", NodeHash: hash, EgressIP: netip.MustParseAddr("5.6.7.8")})
+	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseCreate, PlatformID: "p1", Account: "acct", NodeHash: hash, EgressIP: netip.MustParseAddr("5.6.7.8"), CreatedAtNs: createdNs})
 	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseTouch, PlatformID: "p1", Account: "acct"})
-	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseReplace, PlatformID: "p1", Account: "acct", NodeHash: hash})
+	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseReplace, PlatformID: "p1", Account: "acct", NodeHash: hash, CreatedAtNs: createdNs})
 	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseRemove, PlatformID: "p1", Account: "acct", CreatedAtNs: createdNs})
 	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseExpire, PlatformID: "p2", Account: "other"})
 	m.OnLeaseEvent(routing.LeaseEvent{Type: routing.LeaseEventType(99), PlatformID: "p1"})
@@ -1574,7 +1635,8 @@ func TestManagerEventsDelivery(t *testing.T) {
 		}
 	}
 	if created.PlatformID != "p1" || created.PlatformName != "name-p1" || created.Account != "acct" ||
-		created.NodeHash != hash.Hex() || created.EgressIP != "5.6.7.8" || created.CreatedAt != nil {
+		created.NodeHash != hash.Hex() || created.EgressIP != "5.6.7.8" || created.CreatedAt == nil ||
+		!created.CreatedAt.Equal(time.Unix(0, createdNs).UTC()) {
 		t.Fatalf("lease.created data = %+v", created)
 	}
 	if removed.CreatedAt == nil || !removed.CreatedAt.Equal(time.Unix(0, createdNs)) {
@@ -1963,6 +2025,50 @@ func TestManagerPackageLoadErrors(t *testing.T) {
 	}
 	if _, err := m.Get("pkg.badjson"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get after uninstall err = %v", err)
+	}
+}
+
+func TestManagerUninstallRemovesEntryBeforeStoppingInstance(t *testing.T) {
+	dir := t.TempDir()
+	manifest := pluginsdk.Manifest{
+		SchemaVersion: pluginsdk.SchemaVersion,
+		ID:            "pkg.running",
+		Name:          "running",
+		Version:       "1.0.0",
+		Capabilities:  pluginsdk.Capabilities{RequestHook: true},
+		Runtimes:      map[string]pluginsdk.RuntimeSpec{"any": {Command: []string{"bin/plugin"}}},
+	}
+	tmWriteFile(t, filepath.Join(dir, manifest.ID, pluginsdk.ManifestFileName), tmManifestJSON(t, manifest))
+	m := tmStartManager(t, ManagerConfig{PluginDir: dir, ExternalEnabled: true})
+	e := m.entries[manifest.ID]
+	if e == nil {
+		t.Fatalf("package entry %q was not discovered", manifest.ID)
+	}
+	closed := false
+	e.settings.Enabled = true
+	e.inst = &tmNoopInstance{closeFn: func(context.Context) error {
+		closed = true
+		if _, ok := m.entries[manifest.ID]; ok {
+			t.Errorf("plugin entry still present while instance is stopping")
+		}
+		return nil
+	}}
+	m.rebuildChain()
+
+	if err := m.Uninstall(context.Background(), manifest.ID); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if !closed {
+		t.Fatal("running instance was not closed")
+	}
+	if _, err := m.Get(manifest.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after uninstall = %v, want ErrNotFound", err)
+	}
+	if _, err := m.Rescan(context.Background()); err != nil {
+		t.Fatalf("Rescan after uninstall: %v", err)
+	}
+	if _, err := m.Get(manifest.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("plugin reappeared after uninstall: %v", err)
 	}
 }
 

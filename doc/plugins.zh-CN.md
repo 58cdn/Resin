@@ -42,13 +42,14 @@
 | `fail_closed` | `false` | 钩子出错或超时时：`false` 跳过该插件，`true` 以 `503 PLUGIN_ERROR` 拒绝请求 |
 | `config` | 清单中的默认值 | 插件专属的 JSON 对象，按 `config_fields` 校验并热更新 |
 
-## 安全模型
+`resin.webhook` 内置插件有独立的 `config.timeout_ms`，默认 5000，最大 10000 毫秒；这是因为事件投递使用有界的关闭预算。
+
 
 包插件以与 Resin 相同的操作系统用户和权限运行。请只安装你信任的插件。
 
 - 包插件、上传和插件市场 **默认关闭**。
 - 插件进程 **不会** 继承 `RESIN_*` 环境变量（其中包含管理令牌和代理令牌），只会收到 `RESIN_PLUGIN_ID`、`RESIN_PLUGIN_DIR` 和 `RESIN_PLUGIN_DATA_DIR`。
-- `Proxy-Authorization` 永远不会传给插件。插件不能修改 `Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer` 或 `Proxy-Authorization`；非法的请求头名称或值会被忽略。
+- `Proxy-Authorization` 永远不会传给插件。插件不能修改 `Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer` 或 `Proxy-Authorization`；非法的请求头名称或值会被忽略。CONNECT 和 SOCKS5 请求不会应用 header ops。
 - 事件中不包含请求/响应的正文或请求头。
 - 压缩包会检查路径穿越、绝对路径、链接以及大小限制（下载 100 MiB、解压后 512 MiB、4096 个条目）。插件市场的制品必须与其 `sha256` 匹配。
 - 展示插件市场 URL 时会隐去其中的凭据和查询字符串。
@@ -57,16 +58,17 @@
 
 对每个 HTTP 正向代理、CONNECT、反向代理和 SOCKS5 请求，在代理认证之后、路由之前，Resin 会按优先级依次调用每个已启用的请求插件：
 
-1. 插件收到 `RequestInfo`。其中的 Platform、Account 和请求头已包含更高优先级插件所做的修改。
+1. 插件收到 `RequestInfo`。其中的 Platform、Account 和请求头已包含更高优先级插件所做的修改；未提供平台时插件看到的 Platform 是 `Default`。
 2. `reject` 决策会终止链。HTTP 客户端收到插件指定的状态码（默认 403）和消息，并带有 `X-Resin-Error: PLUGIN_REJECTED` 与 `X-Resin-Plugin: <插件 id>` 响应头。SOCKS5 客户端收到回复 `0x02`（规则不允许连接）。
-3. `continue` 决策可以覆盖 Platform/Account（用于路由和请求日志），并设置/移除请求头。请求头修改只对反向代理和普通 HTTP 正向代理的上游请求生效。
-4. 错误和超时会计入插件统计。开启 `fail_closed` 时请求以 `503 PLUGIN_ERROR` 失败（SOCKS5：一般性失败 `0x01`）；否则跳过该插件。
+3. `continue` 决策可以覆盖 Platform/Account（用于路由和请求日志），并设置/移除请求头。请求头修改只对反向代理和普通 HTTP 正向代理的上游请求生效。反向代理使用 Rewrite 模式，不会追加 `X-Forwarded-For`；插件设置或移除该头都不能把客户端 IP 暴露给上游。
+4. 如果客户端在插件运行期间断开，请求会静默结束：不写响应，也不把这次插件调用计为错误。
+5. 错误和超时会计入插件统计。开启 `fail_closed` 时请求以 `503 PLUGIN_ERROR` 失败（SOCKS5：一般性失败 `0x01`）；否则跳过该插件。启用但无法启动的 fail_closed 插件会在请求链中发布同样返回 503 的占位项。
 
 没有启用任何请求插件时，热路径的开销只是一次原子读取。
 
 ## 事件
 
-事件异步投递，不会拖慢代理。每个订阅了事件的插件都有一个容量为 4096 的有界队列；事件以最多 256 条为一批发送，或每秒发送一次。队列满时新事件会被丢弃，并计入 `events_dropped`。
+事件异步投递，不会拖慢代理。每个订阅了事件的插件都有一个容量为 4096 的有界队列；事件以最多 256 条为一批发送，或每秒发送一次。队列满时新事件会被丢弃，并计入 `events_dropped`。Webhook 内置插件只会为其 `events` 配置匹配的事件入队。
 
 `request.finished` 数据：
 
@@ -154,8 +156,10 @@ example.rate-limit/
 | `min_resin_version` | 可选的点分版本号。要求更新版本 Resin 的插件包会在安装/加载时被拒绝。开发构建（`dev`）跳过此检查 |
 | `capabilities.request_hook` | 接收 `request.inspect` 调用 |
 | `capabilities.events` | 订阅的事件：精确类型、`*`，或 `lease.*` 这样的 `前缀.*` |
-| `config_fields` | 配置对象顶层键的 schema，WebUI 据此渲染表单。未声明的键原样透传 |
+| `config_fields` | 配置对象顶层键的 schema，WebUI 据此渲染表单。内置插件拒绝未声明的键 |
 | `runtimes` | `<goos>-<goarch>`（如 `linux-arm64`、`windows-amd64`）或 `any`。相对路径的 `command[0]`（包含 `/` 或 `\`，或以 `.` 开头）在插件包内解析，且不能逃出插件包（Windows 上当文件没有扩展名且存在对应 `.exe` 时自动补 `.exe`）；绝对路径原样使用；`python3` 这样的裸命令名在 `PATH` 中查找。工作目录为插件包目录 |
+
+配置对象中缺失或为 `null` 且声明了默认值的字段，会在 Configure 前补齐。内置插件拒绝未声明的顶层键；包插件按协议实现处理收到的对象。
 
 配置字段类型：
 
@@ -308,7 +312,7 @@ func main() {
 }
 ```
 
-- 制品 URL 可以是相对于索引 URL 的相对路径，因此把 `index.json` 与压缩包放在一起的 GitHub Pages 站点或对象存储桶即可作为插件市场。
+- 制品 URL 可以是相对于索引 URL 的相对路径，因此把 `index.json` 与压缩包放在一起的 GitHub Pages 站点或对象存储桶即可作为插件市场。相对制品路径不会继承索引 URL 的 query；API 返回的制品 URL 会隐去凭据和 query，安装时宿主内部仍使用解析后的原始 URL。
 - 会为当前平台选择最合适的制品：先精确匹配 `os`/`arch`，其次是 `os` 匹配且 `arch: "any"`，最后是 `any`/`any`。
 - `sha256` 必填，并在解压前校验。压缩包中 `plugin.json` 的 id 必须与索引中的 id 一致。
 - `min_resin_version` 高于当前 Resin 版本的条目会被列出，但不可安装。

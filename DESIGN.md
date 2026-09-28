@@ -963,7 +963,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
 * **内置插件（builtin）**：编译进 Resin、在进程内运行，始终可用，默认禁用。
   * `resin.access-control`：按客户端 CIDR、平台、账号、目标主机、代理类型匹配的有序允许/拒绝规则。
   * `resin.header-rewrite`：按规则设置/移除上游请求头，值支持 `${account}`、`${platform}`、`${client_ip}`、`${target_host}` 变量。
-  * `resin.webhook`：将事件批次 POST 到外部 HTTP 端点。
+  * `resin.webhook`：将事件批次 POST 到外部 HTTP 端点；其 `config.timeout_ms` 默认 5000，最大 10000ms。
 * **插件包（package）**：由 Resin 启动的子进程，可用任意语言编写。仅当 `RESIN_EXTERNAL_PLUGINS_ENABLED=true` 时加载。
 
 不使用 Go 原生 `plugin` 包：它要求 CGO、与宿主完全一致的编译环境，且不支持 Windows，无法满足“开箱即用、跨平台单二进制”的原则。子进程 + 标准输入输出的方式对插件语言没有限制，插件崩溃也不会影响 Resin 主进程。
@@ -982,21 +982,22 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
 
 ### 请求钩子链
 * 已启用且具备请求钩子能力的插件按 `priority` 从高到低（相同时按 id）组成链，链以不可变快照形式通过原子指针发布。没有启用任何请求插件时，热路径的开销仅为一次原子读取。
-* 每个插件看到的 Platform、Account 与请求头包含更高优先级插件的修改。
-* 第一个 `reject` 终止链，返回 `PLUGIN_REJECTED`（见“代理错误处理”）。
-* 出错或超过 `timeout_ms` 时计入插件统计：开启 `fail_closed` 返回 `PLUGIN_ERROR`，否则跳过该插件。
-* 请求头修改仅作用于反向代理与普通 HTTP 正向代理（CONNECT 与 SOCKS5 无上游 HTTP 请求）。`Proxy-Authorization` 永远不会传给插件；`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer`、`Proxy-Authorization` 不允许修改，非法的请求头名称或值会被忽略。
+* 每个插件看到的 Platform、Account 与请求头包含更高优先级插件的修改；未提供 Platform 时统一使用 `Default`。
+* 第一个 `reject` 终止链，返回 `PLUGIN_REJECTED`（见“代理错误处理”）。客户端在插件调用期间断开时静默结束请求，不写响应且不计插件错误。
+* 出错或超过 `timeout_ms` 时计入插件统计：开启 `fail_closed` 返回 `PLUGIN_ERROR`，否则跳过该插件；启用但启动失败的 fail-closed 插件在链中保留返回 503 `PLUGIN_ERROR` 的占位项。
+* 请求头修改仅作用于反向代理与普通 HTTP 正向代理（CONNECT 与 SOCKS5 无上游 HTTP 请求）。反向代理使用 Rewrite 语义，不追加 `X-Forwarded-For`，插件也不能通过设置/移除它暴露客户端 IP。`Proxy-Authorization` 永远不会传给插件；`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer`、`Proxy-Authorization` 不允许修改，非法的请求头名称或值会被忽略。
 * 覆盖后的 Platform/Account 同时用于路由与请求日志。
 
 ### 事件投递
 * 事件从请求日志与租约事件的发布点旁路产生，不阻塞代理。
-* 每个订阅插件有独立的有界队列（4096），按最多 256 条一批或每秒一次投递；队列满时丢弃新事件并计入 `events_dropped`。
+* 每个订阅插件有独立的有界队列（4096），按最多 256 条一批或每秒一次投递；队列满时丢弃新事件并计入 `events_dropped`。Webhook 内置插件只为其 `events` 配置匹配的事件入队。
+* 配置对象中缺失或为 `null` 且声明默认值的字段在 Configure 前补齐；内置插件拒绝未声明的顶层键。
 * 事件只包含元数据，不包含请求/响应正文或请求头。
 
 ### 进程生命周期
 * 启动后必须在 10 秒内完成 `plugin.register`，否则视为启动失败。
 * 进程意外退出时按 1s 起、最大 30s 的指数退避自动重启，并以当前配置重新注册；稳定运行 30 秒后重置退避。重启期间的调用立即失败，按 `fail_closed` 处理。
-* 停止时先发送 `plugin.shutdown`，随后关闭 stdin，3 秒内未退出则强制结束。
+* 停止时先发送 `plugin.shutdown`，宿主使用脱离请求取消的最多 10 秒关闭上下文；进程自身 3 秒内未退出则强制结束。
 * 插件进程不继承 `RESIN_*` 环境变量（其中包含 Admin/Proxy Token），只额外获得 `RESIN_PLUGIN_ID`、`RESIN_PLUGIN_DIR`、`RESIN_PLUGIN_DATA_DIR`。工作目录为插件包目录。
 
 ### 安装与插件市场
@@ -1004,7 +1005,7 @@ Resin 需要做实事与历史的统计数据，用于 Dashboard 展示。
 * 安装来源：上传 `.zip` / `.tar.gz`、手动复制目录后重新扫描、从插件市场安装。
 * 压缩包解压时拒绝路径穿越、绝对路径、符号链接/硬链接与特殊文件，并限制条目数（4096）、解压总大小（512 MiB）、单文件大小（256 MiB）与下载大小（100 MiB）。
 * 升级时先解压到临时目录并校验清单，再替换旧版本；若插件已启用且新版本启动失败，自动回滚到旧版本。设置与数据目录保留。
-* 插件市场是静态 JSON 索引（可托管于 GitHub Pages 或对象存储），配置于 `RESIN_PLUGIN_MARKETPLACE_URLS`。每个条目按 `os`/`arch` 提供制品，制品 URL 可相对于索引 URL，`sha256` 必填且在解压前校验。多个索引包含同一 id 时以先配置者为准。
+* 插件市场是静态 JSON 索引（可托管于 GitHub Pages 或对象存储），配置于 `RESIN_PLUGIN_MARKETPLACE_URLS`。每个条目按 `os`/`arch` 提供制品，制品 URL 可相对于索引 URL（相对路径不继承索引 query），`sha256` 必填且在解压前校验。市场 API 脱敏制品 URL 的凭据与 query，但安装流程保留内部原始 URL。多个索引包含同一 id 时以先配置者为准。
 * `min_resin_version` 高于当前 Resin 版本的插件包在市场中不可安装，上传/加载时被拒绝；开发构建（版本为 `dev`）跳过该检查。
 
 ### 持久化

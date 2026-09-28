@@ -192,6 +192,10 @@ func pluginServiceError(err error) *ServiceError {
 		return invalidArg(msg(plugin.ErrInvalidArgument))
 	case errors.Is(err, plugin.ErrStartFailed):
 		return invalidArg(err.Error())
+	case errors.Is(err, plugin.ErrMarketplaceUnavailable):
+		return &ServiceError{Code: "SERVICE_UNAVAILABLE", Message: msg(plugin.ErrMarketplaceUnavailable), Err: err}
+	case errors.Is(err, plugin.ErrMarketplaceDownload):
+		return &ServiceError{Code: "BAD_GATEWAY", Message: msg(plugin.ErrMarketplaceDownload), Err: err}
 	case errors.Is(err, plugin.ErrExternalDisabled):
 		return conflict(err.Error())
 	case errors.Is(err, plugin.ErrConflict):

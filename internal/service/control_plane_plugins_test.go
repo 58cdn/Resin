@@ -191,7 +191,7 @@ func TestPluginService_PatchValidation(t *testing.T) {
 		{"config field wrong type", builtin.AccessControlID, `{"config":{"reject_status":"x"}}`, "INVALID_ARGUMENT", "config.reject_status: must be an integer"},
 		{"config missing required", builtin.WebhookID, `{"config":{}}`, "INVALID_ARGUMENT", "config.url: required"},
 		{"builtin probe rejects config while disabled", builtin.AccessControlID, `{"config":{"rules":[{"action":"block"}]}}`, "INVALID_ARGUMENT", "plugin rejected config"},
-		{"enable fails to start", builtin.WebhookID, `{"enabled":true}`, "INVALID_ARGUMENT", "plugin failed to start"},
+		{"enable fails to start", builtin.WebhookID, `{"enabled":true}`, "INVALID_ARGUMENT", "config.url: required"},
 		{"unknown plugin", "no.such.plugin", `{"enabled":true}`, "NOT_FOUND", "plugin not found"},
 	}
 	for _, tc := range cases {
@@ -281,18 +281,11 @@ func TestPluginService_PatchSuccess(t *testing.T) {
 	tpAssertServiceErr(t, err, "INVALID_ARGUMENT", "empty patch")
 }
 
-func TestPluginService_PatchConfigPreservesNumberPrecision(t *testing.T) {
+func TestPluginService_PatchConfigRejectsUnknownField(t *testing.T) {
 	s, _, _ := tpNewPluginService(t, false)
-	// header-rewrite rules is a JSON field; big integers inside must survive
-	// verbatim (no float64 round-trip).
 	patch := `{"config":{"rules":[{"set":{"X-Big":"v"},"client_cidrs":[]}],"extra":12345678901234567890}}`
-	info, err := s.PatchPlugin(context.Background(), builtin.HeaderRewriteID, json.RawMessage(patch))
-	if err != nil {
-		t.Fatalf("PatchPlugin: %v", err)
-	}
-	if !strings.Contains(string(info.Config), "12345678901234567890") {
-		t.Fatalf("config lost number precision: %s", info.Config)
-	}
+	_, err := s.PatchPlugin(context.Background(), builtin.HeaderRewriteID, json.RawMessage(patch))
+	tpAssertServiceErr(t, err, "INVALID_ARGUMENT", "unknown field")
 }
 
 func TestPluginService_PatchPersistFailure(t *testing.T) {
@@ -435,7 +428,8 @@ func TestPluginServiceError_Mapping(t *testing.T) {
 		{"invalid wrapped empty detail", fmt.Errorf("%w: ", plugin.ErrInvalidArgument), "INVALID_ARGUMENT", "invalid argument: "},
 		{"invalid outer wrap keeps text", fmt.Errorf("outer: %w", fmt.Errorf("%w: inner", plugin.ErrInvalidArgument)), "INVALID_ARGUMENT", "outer: invalid argument: inner"},
 		{"start failed keeps full text", fmt.Errorf("%w: boom", plugin.ErrStartFailed), "INVALID_ARGUMENT", "plugin failed to start: boom"},
-		{"external disabled", plugin.ErrExternalDisabled, "CONFLICT", plugin.ErrExternalDisabled.Error()},
+		{"marketplace unavailable", fmt.Errorf("lookup: %w: source down", plugin.ErrMarketplaceUnavailable), "SERVICE_UNAVAILABLE", "lookup: marketplace unavailable: source down"},
+		{"marketplace download", fmt.Errorf("fetch: %w: HTTP 404", plugin.ErrMarketplaceDownload), "BAD_GATEWAY", "fetch: marketplace download failed: HTTP 404"},
 		{"external disabled wrapped", fmt.Errorf("install: %w", plugin.ErrExternalDisabled), "CONFLICT", "install: " + plugin.ErrExternalDisabled.Error()},
 		{"conflict wrapped", fmt.Errorf("%w: busy", plugin.ErrConflict), "CONFLICT", "busy"},
 		{"conflict bare", plugin.ErrConflict, "CONFLICT", "conflict"},

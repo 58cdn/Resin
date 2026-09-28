@@ -14,6 +14,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/pkg/pluginsdk"
+	"golang.org/x/net/http/httpguts"
 )
 
 // WebhookID is the id of the webhook builtin.
@@ -37,7 +38,8 @@ func webhookBuiltin() plugin.Builtin {
 					Description: `Extra request headers, e.g. {"Authorization":"Bearer ..."}.`},
 				{Name: "events", Label: "Events", Type: pluginsdk.FieldStringList, Default: raw(`["*"]`),
 					Description: "Event types to send: *, request.finished, lease.*, lease.created, lease.replaced, lease.removed, lease.expired."},
-				{Name: "timeout_ms", Label: "Timeout (ms)", Type: pluginsdk.FieldInteger, Default: raw(`5000`)},
+				{Name: "timeout_ms", Label: "Timeout (ms)", Type: pluginsdk.FieldInteger, Default: raw(`5000`),
+					Description: "Webhook request timeout in milliseconds (maximum 10000)."},
 			},
 		},
 		New: func() pluginsdk.Plugin { return &webhook{client: &http.Client{}} },
@@ -67,7 +69,7 @@ func (w *webhook) Configure(_ context.Context, config json.RawMessage) error {
 		return fmt.Errorf("url must be an absolute http(s) URL")
 	}
 	for k, v := range cfg.Headers {
-		if strings.TrimSpace(k) == "" || strings.ContainsAny(k+v, "\r\n") {
+		if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) {
 			return fmt.Errorf("headers: invalid header %q", k)
 		}
 	}
@@ -75,23 +77,30 @@ func (w *webhook) Configure(_ context.Context, config json.RawMessage) error {
 		cfg.Events = []string{"*"}
 	}
 	for _, ev := range cfg.Events {
-		if !pluginsdk.MatchEvent([]string{ev}, pluginsdk.EventRequestFinished) &&
-			!pluginsdk.MatchEvent([]string{ev}, pluginsdk.EventLeaseCreated) &&
-			!pluginsdk.MatchEvent([]string{ev}, pluginsdk.EventLeaseReplaced) &&
-			!pluginsdk.MatchEvent([]string{ev}, pluginsdk.EventLeaseRemoved) &&
-			!pluginsdk.MatchEvent([]string{ev}, pluginsdk.EventLeaseExpired) {
+		if !pluginsdk.ValidEventPattern(ev) {
 			return fmt.Errorf("events: unknown event type %q", ev)
 		}
 	}
 	if cfg.TimeoutMs <= 0 {
 		cfg.TimeoutMs = 5000
 	}
-	if cfg.TimeoutMs > 60000 {
-		return fmt.Errorf("timeout_ms must be at most 60000")
+	if cfg.TimeoutMs > 10000 {
+		return fmt.Errorf("timeout_ms must be at most 10000")
 	}
 	w.cfg.Store(&cfg)
 	return nil
 }
+
+// SubscribedEvents lets the host avoid queueing events this webhook filters out.
+func (w *webhook) SubscribedEvents() []string {
+	cfg := w.cfg.Load()
+	if cfg == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.Events...)
+}
+
+var _ plugin.EventSubscriber = (*webhook)(nil)
 
 func (w *webhook) HandleEvents(ctx context.Context, events []pluginsdk.Event) error {
 	cfg := w.cfg.Load()
