@@ -13,6 +13,7 @@ import (
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/routing"
+	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
 // ForwardProxyConfig holds dependencies for the forward proxy.
@@ -26,6 +27,8 @@ type ForwardProxyConfig struct {
 	OutboundTransport OutboundTransportConfig
 	TransportPool     *OutboundTransportPool
 	ProxyBypassRules  []string
+	// Hooks, when set, runs request plugins before routing.
+	Hooks RequestHook
 }
 
 // ForwardProxy implements an HTTP forward proxy with Proxy-Authorization
@@ -43,6 +46,7 @@ type ForwardProxy struct {
 	directTransport   *http.Transport
 	directOnce        sync.Once
 	bypass            *TargetBypassMatcher
+	hooks             RequestHook
 }
 
 // NewForwardProxy creates a new forward proxy handler.
@@ -66,6 +70,7 @@ func NewForwardProxy(cfg ForwardProxyConfig) *ForwardProxy {
 		transportConfig: transportCfg,
 		transportPool:   transportPool,
 		bypass:          NewTargetBypassMatcher(cfg.ProxyBypassRules),
+		hooks:           cfg.Hooks,
 	}
 }
 
@@ -226,6 +231,35 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
 
+	var headerOps []HeaderOp
+	if hookActive(p.hooks) {
+		res := p.hooks.InspectRequest(r.Context(), &pluginsdk.RequestInfo{
+			ProxyType:  pluginsdk.ProxyTypeForward,
+			ClientIP:   lifecycle.log.ClientIP,
+			Platform:   hookPlatform(platName),
+			Account:    account,
+			TargetHost: r.Host,
+			Method:     r.Method,
+			URL:        lifecycle.log.TargetURL,
+			Headers:    hookHeaders(r.Header),
+		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
+		if res.Reject != nil {
+			lifecycle.applyHookReject(res.Reject)
+			writePluginReject(w, res)
+			return
+		}
+		if res.Platform != hookPlatform(platName) {
+			platName = res.Platform
+		}
+		account = res.Account
+		lifecycle.setAccount(account)
+		headerOps = res.HeaderOps
+	}
+
 	var route routing.RouteResult
 	var hasRoute bool
 	var transport *http.Transport
@@ -248,6 +282,7 @@ func (p *ForwardProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		transport = p.outboundHTTPTransport(routed)
 	}
 	outReq := prepareForwardOutboundRequest(r)
+	applyHeaderOps(outReq.Header, headerOps)
 	upstreamTrace := newUpstreamRequestTrace(lifecycle.markFirstByteReceived)
 	outReq = outReq.WithContext(httptrace.WithClientTrace(outReq.Context(), upstreamTrace.clientTrace()))
 	pendingEgressHeaderBytes := headerWireLen(outReq.Header)
@@ -323,6 +358,33 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	lifecycle.setTarget(target, "")
 	defer lifecycle.finish()
 	lifecycle.setAccount(account)
+
+	if hookActive(p.hooks) {
+		res := p.hooks.InspectRequest(r.Context(), &pluginsdk.RequestInfo{
+			ProxyType:  pluginsdk.ProxyTypeForward,
+			IsConnect:  true,
+			ClientIP:   lifecycle.log.ClientIP,
+			Platform:   hookPlatform(platName),
+			Account:    account,
+			TargetHost: target,
+			Method:     r.Method,
+			Headers:    hookHeaders(r.Header),
+		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
+		if res.Reject != nil {
+			lifecycle.applyHookReject(res.Reject)
+			writePluginReject(w, res)
+			return
+		}
+		if res.Platform != hookPlatform(platName) {
+			platName = res.Platform
+		}
+		account = res.Account
+		lifecycle.setAccount(account)
+	}
 
 	prepare := prepareConnectTunnel(
 		r.Context(),

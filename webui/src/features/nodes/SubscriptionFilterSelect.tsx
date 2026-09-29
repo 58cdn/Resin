@@ -149,12 +149,15 @@ export function SubscriptionFilterSelect({ id, value, onChange, style }: Subscri
   const pageQueries = useQueries({
     queries: Array.from({ length: pageCount }, (_, pageIndex) => ({
       queryKey: ["subscriptions", "node-filter-options", keyword, pageIndex],
-      queryFn: () =>
-        listSubscriptions({
-          limit: OPTIONS_PAGE_SIZE,
-          offset: pageIndex * OPTIONS_PAGE_SIZE,
-          keyword,
-        }),
+      queryFn: ({ signal }) =>
+        listSubscriptions(
+          {
+            limit: OPTIONS_PAGE_SIZE,
+            offset: pageIndex * OPTIONS_PAGE_SIZE,
+            keyword,
+          },
+          signal
+        ),
       enabled: open,
       staleTime: 60_000,
     })),

@@ -76,6 +76,8 @@ type SubscriptionCreateForm = z.infer<typeof subscriptionCreateSchema>;
 type SubscriptionEditForm = z.infer<typeof subscriptionEditSchema>;
 const EMPTY_SUBSCRIPTIONS: Subscription[] = [];
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+// Listing subscriptions counts the nodes of every subscription; apply the search once typing pauses.
+const SEARCH_DEBOUNCE_MS = 300;
 const LOCAL_SOURCE_UPDATE_INTERVAL = "12h";
 const SUBSCRIPTION_DISABLE_HINT = "禁用订阅后，相关节点不会参与平台路由、健康统计或自动探测。";
 const SUBSCRIPTION_EPHEMERAL_HINT = "临时订阅的非健康节点会在一段时间后被自动删除。订阅本身不会被删除。";
@@ -128,6 +130,7 @@ export function SubscriptionPage() {
   const { t } = useI18n();
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(20);
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState("");
@@ -153,15 +156,30 @@ export function SubscriptionPage() {
     t("socks5h://user:pass@example.com:1080"),
   ].join("\n");
 
+  useEffect(() => {
+    const keyword = search.trim();
+    if (keyword === debouncedSearch) {
+      return;
+    }
+    const timeoutID = window.setTimeout(() => {
+      setDebouncedSearch(keyword);
+      setPage(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutID);
+  }, [search, debouncedSearch]);
+
   const subscriptionsQuery = useQuery({
-    queryKey: ["subscriptions", enabledFilter, page, pageSize, search],
-    queryFn: () =>
-      listSubscriptions({
-        enabled: enabledValue,
-        limit: pageSize,
-        offset: page * pageSize,
-        keyword: search,
-      }),
+    queryKey: ["subscriptions", enabledFilter, page, pageSize, debouncedSearch],
+    queryFn: ({ signal }) =>
+      listSubscriptions(
+        {
+          enabled: enabledValue,
+          limit: pageSize,
+          offset: page * pageSize,
+          keyword: debouncedSearch,
+        },
+        signal
+      ),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   });
@@ -680,10 +698,7 @@ export function SubscriptionPage() {
                 id="subscription-search"
                 placeholder={t("搜索订阅")}
                 value={search}
-                onChange={(event) => {
-                  setSearch(event.target.value);
-                  setPage(0);
-                }}
+                onChange={(event) => setSearch(event.target.value)}
                 style={{ padding: "6px 10px", borderRadius: 8 }}
               />
             </label>

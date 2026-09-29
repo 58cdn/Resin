@@ -12,6 +12,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/routing"
+	"github.com/Resinat/Resin/pkg/pluginsdk"
 )
 
 const (
@@ -43,6 +44,8 @@ type Socks5InboundConfig struct {
 	Events           EventEmitter
 	MetricsSink      MetricsEventSink
 	ProxyBypassRules []string
+	// Hooks, when set, runs request plugins before routing.
+	Hooks RequestHook
 }
 
 // Socks5Inbound implements SOCKS5 CONNECT over a raw TCP connection.
@@ -50,6 +53,7 @@ type Socks5Inbound struct {
 	token  string
 	tunnel tunnelDeps
 	events EventEmitter
+	hooks  RequestHook
 }
 
 type socks5HandshakeResult struct {
@@ -75,6 +79,7 @@ func NewSocks5Inbound(cfg Socks5InboundConfig) *Socks5Inbound {
 			bypass:      NewTargetBypassMatcher(cfg.ProxyBypassRules),
 		},
 		events: ev,
+		hooks:  cfg.Hooks,
 	}
 }
 
@@ -116,6 +121,37 @@ func (s *Socks5Inbound) ServeConnContext(baseCtx context.Context, conn net.Conn)
 	lifecycle.setTarget(handshake.target, "")
 	lifecycle.setAccount(handshake.account)
 	defer lifecycle.finish()
+
+	if hookActive(s.hooks) {
+		res := s.hooks.InspectRequest(baseCtx, &pluginsdk.RequestInfo{
+			ProxyType:  pluginsdk.ProxyTypeSocks5,
+			IsConnect:  true,
+			ClientIP:   lifecycle.log.ClientIP,
+			Platform:   hookPlatform(handshake.platformName),
+			Account:    handshake.account,
+			TargetHost: handshake.target,
+		})
+		if res.Canceled {
+			lifecycle.setNetOK(true)
+			return
+		}
+		if res.Reject != nil {
+			// SOCKS5 has no HTTP status; the reply code carries the outcome.
+			lifecycle.setProxyError(res.Reject)
+			lifecycle.setNetOK(false)
+			reply := byte(socks5ReplyNotAllowed)
+			if res.Reject.ResinError == ErrPluginUnavailable.ResinError {
+				reply = socks5ReplyGeneralFailure
+			}
+			_ = writeSocks5Reply(conn, reply, nil)
+			return
+		}
+		if res.Platform != hookPlatform(handshake.platformName) {
+			handshake.platformName = res.Platform
+		}
+		handshake.account = res.Account
+		lifecycle.setAccount(handshake.account)
+	}
 
 	prepare := prepareConnectTunnel(
 		baseCtx,
