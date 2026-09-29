@@ -113,6 +113,7 @@ Note: Once enabled, requests without authentication information are rejected ins
   "跳至": "Go to",
   "页": "Page",
   "选择页码": "Select page",
+  "输入页码": "Enter page number",
   "无更多数据": "No more data",
   "有更多数据": "More data available",
   "成功": "Success",

@@ -2328,7 +2328,8 @@ a {
   color: var(--text-muted);
 }
 
-.nodes-page-jump .select {
+.nodes-page-jump .select,
+.nodes-page-jump .input {
   width: 96px;
   height: 36px;
   padding: 0 10px;
