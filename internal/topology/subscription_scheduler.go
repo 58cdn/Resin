@@ -33,6 +33,11 @@ type SubscriptionScheduler struct {
 	// subscription transitions from disabled to enabled.
 	onSubReenabledNode func(hash node.Hash)
 
+	// claimed tracks subscriptions queued or running in a background refresh
+	// batch, so overlapping batches (e.g. startup ForceRefreshAll and the
+	// periodic tick) never refresh the same subscription concurrently.
+	claimed sync.Map // *subscription.Subscription -> struct{}
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -149,6 +154,7 @@ func (s *SubscriptionScheduler) tick() {
 }
 
 func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.Subscription) {
+	subs = s.claimSubscriptions(subs)
 	if len(subs) == 0 {
 		return
 	}
@@ -163,9 +169,10 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
-	for _, sub := range subs {
+	for i, sub := range subs {
 		select {
 		case <-s.stopCh:
+			s.releaseSubscriptions(subs[i:])
 			wg.Wait()
 			return
 		default:
@@ -176,6 +183,7 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 		go func(sub *subscription.Subscription) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer s.claimed.Delete(sub)
 			select {
 			case <-s.stopCh:
 				return
@@ -185,6 +193,25 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 		}(sub)
 	}
 	wg.Wait()
+}
+
+// claimSubscriptions returns the subset of subs not already claimed by another
+// in-flight background batch, and claims them for the caller.
+func (s *SubscriptionScheduler) claimSubscriptions(subs []*subscription.Subscription) []*subscription.Subscription {
+	claimed := make([]*subscription.Subscription, 0, len(subs))
+	for _, sub := range subs {
+		if _, loaded := s.claimed.LoadOrStore(sub, struct{}{}); loaded {
+			continue
+		}
+		claimed = append(claimed, sub)
+	}
+	return claimed
+}
+
+func (s *SubscriptionScheduler) releaseSubscriptions(subs []*subscription.Subscription) {
+	for _, sub := range subs {
+		s.claimed.Delete(sub)
+	}
 }
 
 // UpdateSubscription fetches and parses outside the lock, then diffs and
