@@ -39,18 +39,20 @@ type LatencyTable struct {
 	mu sync.Mutex
 
 	authorities []latencySlot
-	regular     []latencySlot
+	// regular grows on demand up to maxRegular slots; freed slots stay in
+	// place (occupied=false) and are reused before the partition grows.
+	regular    []latencySlot
+	maxRegular int
 }
 
 // NewLatencyTable creates a new LatencyTable whose regular partition
-// is bounded to maxEntries.
+// is bounded to maxEntries. Slots are allocated lazily, so tables for nodes
+// that never record regular-domain latency stay small.
 func NewLatencyTable(maxEntries int) *LatencyTable {
 	if maxEntries <= 0 {
 		panic("node: latency table max entries must be positive")
 	}
-	return &LatencyTable{
-		regular: make([]latencySlot, maxEntries),
-	}
+	return &LatencyTable{maxRegular: maxEntries}
 }
 
 // Update records a latency observation for the given domain using TD-EWMA.
@@ -271,6 +273,10 @@ func (t *LatencyTable) upsertRegularLocked(
 	}
 
 	targetIdx := emptyIdx
+	if targetIdx < 0 && len(t.regular) < t.maxRegular {
+		t.regular = appendLatencySlotCapped(t.regular, t.maxRegular)
+		targetIdx = len(t.regular) - 1
+	}
 	if targetIdx < 0 {
 		targetIdx = oldestIdx
 		if targetIdx >= 0 {
@@ -296,6 +302,24 @@ func (t *LatencyTable) upsertRegularLocked(
 // Collision handling is intentionally omitted as a memory/perf trade-off.
 func domainKey(domain string) uint64 {
 	return xxh3.HashString(domain)
+}
+
+// appendLatencySlotCapped appends one empty slot, growing capacity
+// geometrically but never beyond limit.
+func appendLatencySlotCapped(slots []latencySlot, limit int) []latencySlot {
+	if len(slots) < cap(slots) {
+		return slots[:len(slots)+1]
+	}
+	newCap := 2 * cap(slots)
+	if newCap < 2 {
+		newCap = 2
+	}
+	if newCap > limit {
+		newCap = limit
+	}
+	grown := make([]latencySlot, len(slots)+1, newCap)
+	copy(grown, slots)
+	return grown
 }
 
 func deleteLatencySlot(slots []latencySlot, idx int) []latencySlot {
