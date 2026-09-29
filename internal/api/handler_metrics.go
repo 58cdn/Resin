@@ -456,6 +456,7 @@ func HandleHistoryLeaseLifetime(mgr *metrics.Manager) http.Handler {
 
 // HandleSnapshotNodePool handles GET /api/v1/metrics/snapshots/node-pool.
 func HandleSnapshotNodePool(mgr *metrics.Manager) http.Handler {
+	cache := newSnapshotCache(snapshotCacheTTL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rejectUnsupportedPlatformDimension(w, r) {
 			return
@@ -465,18 +466,21 @@ func HandleSnapshotNodePool(mgr *metrics.Manager) http.Handler {
 			WriteError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "node pool stats not available")
 			return
 		}
-		WriteJSON(w, http.StatusOK, map[string]any{
-			"generated_at":            formatTimestamp(time.Now()),
-			"total_nodes":             stats.TotalNodes(),
-			"healthy_nodes":           stats.HealthyNodes(),
-			"egress_ip_count":         stats.EgressIPCount(),
-			"healthy_egress_ip_count": stats.UniqueHealthyEgressIPCount(),
-		})
+		WriteJSON(w, http.StatusOK, cache.get("", func() map[string]any {
+			return map[string]any{
+				"generated_at":            formatTimestamp(time.Now()),
+				"total_nodes":             stats.TotalNodes(),
+				"healthy_nodes":           stats.HealthyNodes(),
+				"egress_ip_count":         stats.EgressIPCount(),
+				"healthy_egress_ip_count": stats.UniqueHealthyEgressIPCount(),
+			}
+		}))
 	})
 }
 
 // HandleSnapshotPlatformNodePool handles GET /api/v1/metrics/snapshots/platform-node-pool.
 func HandleSnapshotPlatformNodePool(mgr *metrics.Manager) http.Handler {
+	cache := newSnapshotCache(snapshotCacheTTL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		platformID := r.URL.Query().Get("platform_id")
 		if platformID == "" {
@@ -493,13 +497,15 @@ func HandleSnapshotPlatformNodePool(mgr *metrics.Manager) http.Handler {
 			WriteError(w, http.StatusNotFound, "NOT_FOUND", "platform not found")
 			return
 		}
-		egressCount, _ := stats.PlatformEgressIPCount(platformID)
-		WriteJSON(w, http.StatusOK, map[string]any{
-			"generated_at":        formatTimestamp(time.Now()),
-			"platform_id":         platformID,
-			"routable_node_count": routable,
-			"egress_ip_count":     egressCount,
-		})
+		WriteJSON(w, http.StatusOK, cache.get(platformID, func() map[string]any {
+			egressCount, _ := stats.PlatformEgressIPCount(platformID)
+			return map[string]any{
+				"generated_at":        formatTimestamp(time.Now()),
+				"platform_id":         platformID,
+				"routable_node_count": routable,
+				"egress_ip_count":     egressCount,
+			}
+		}))
 	})
 }
 
@@ -507,6 +513,7 @@ func HandleSnapshotPlatformNodePool(mgr *metrics.Manager) http.Handler {
 // This returns a histogram of per-node authority-domain EWMA latencies, NOT
 // the per-request access latency stored in the Collector.
 func HandleSnapshotNodeLatencyDistribution(mgr *metrics.Manager) http.Handler {
+	cache := newSnapshotCache(snapshotCacheTTL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		platformID := r.URL.Query().Get("platform_id")
 		scope := "global"
@@ -523,58 +530,65 @@ func HandleSnapshotNodeLatencyDistribution(mgr *metrics.Manager) http.Handler {
 			return
 		}
 
-		snap := mgr.Collector().Snapshot()
-		binMs := snap.LatencyBinMs
-		overMs := snap.LatencyOverMs
-		if binMs <= 0 {
-			binMs = 50
-		}
-		if overMs <= 0 {
-			overMs = 5000
-		}
-		regularBins := (overMs + binMs - 1) / binMs // ceil(over/bin), buckets cover [0, overMs)
-		if regularBins <= 0 {
-			regularBins = 1
-		}
-
-		ewmas := stats.CollectNodeEWMAs(platformID)
-
-		// Build histogram from EWMA values.
-		bucketCounts := make([]int64, regularBins)
-		var overflowCount int64
-		for _, ms := range ewmas {
-			if ms >= float64(overMs) {
-				overflowCount++
-				continue
-			}
-			idx := 0
-			if ms >= 0 {
-				idx = int(ms / float64(binMs))
-			}
-			if idx >= regularBins {
-				idx = regularBins - 1
-			}
-			if idx < 0 {
-				idx = 0
-			}
-			bucketCounts[idx]++
-		}
-
-		histBuckets, sampleCount := buildLatencyHistogram(bucketCounts, overflowCount, binMs, overMs)
-
-		resp := map[string]any{
-			"generated_at":   formatTimestamp(time.Now()),
-			"scope":          scope,
-			"bin_width_ms":   binMs,
-			"overflow_ms":    overMs,
-			"sample_count":   sampleCount,
-			"buckets":        histBuckets,
-			"overflow_count": overflowCount,
-		}
-		if platformID != "" {
-			resp["platform_id"] = platformID
-		}
-
-		WriteJSON(w, http.StatusOK, resp)
+		WriteJSON(w, http.StatusOK, cache.get(platformID, func() map[string]any {
+			return buildNodeLatencyDistribution(mgr, stats, platformID, scope)
+		}))
 	})
+}
+
+// buildNodeLatencyDistribution builds the histogram response from the EWMA
+// latency of every node in scope.
+func buildNodeLatencyDistribution(mgr *metrics.Manager, stats metrics.RuntimeStatsProvider, platformID, scope string) map[string]any {
+	snap := mgr.Collector().Snapshot()
+	binMs := snap.LatencyBinMs
+	overMs := snap.LatencyOverMs
+	if binMs <= 0 {
+		binMs = 50
+	}
+	if overMs <= 0 {
+		overMs = 5000
+	}
+	regularBins := (overMs + binMs - 1) / binMs // ceil(over/bin), buckets cover [0, overMs)
+	if regularBins <= 0 {
+		regularBins = 1
+	}
+
+	ewmas := stats.CollectNodeEWMAs(platformID)
+
+	// Build histogram from EWMA values.
+	bucketCounts := make([]int64, regularBins)
+	var overflowCount int64
+	for _, ms := range ewmas {
+		if ms >= float64(overMs) {
+			overflowCount++
+			continue
+		}
+		idx := 0
+		if ms >= 0 {
+			idx = int(ms / float64(binMs))
+		}
+		if idx >= regularBins {
+			idx = regularBins - 1
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		bucketCounts[idx]++
+	}
+
+	histBuckets, sampleCount := buildLatencyHistogram(bucketCounts, overflowCount, binMs, overMs)
+
+	resp := map[string]any{
+		"generated_at":   formatTimestamp(time.Now()),
+		"scope":          scope,
+		"bin_width_ms":   binMs,
+		"overflow_ms":    overMs,
+		"sample_count":   sampleCount,
+		"buckets":        histBuckets,
+		"overflow_count": overflowCount,
+	}
+	if platformID != "" {
+		resp["platform_id"] = platformID
+	}
+	return resp
 }
