@@ -95,3 +95,8 @@ export async function cleanupSubscriptionCircuitOpenNodes(id: string): Promise<n
   });
   return data.cleaned_count;
 }
+
+export async function getSubscription(id: string, signal?: AbortSignal): Promise<Subscription> {
+  const data = await apiRequest<ApiSubscription>(`${basePath}/${id}`, { signal });
+  return normalizeSubscription(data);
+}

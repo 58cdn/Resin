@@ -17,10 +17,10 @@ import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
-import { listSubscriptions } from "../subscriptions/api";
 import { getNode, listNodes, probeEgress, probeLatency } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
+import { SubscriptionFilterSelect } from "./SubscriptionFilterSelect";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
@@ -65,6 +65,9 @@ const NODE_FILTER_CONTROL_STYLE: CSSProperties = {
   minHeight: "32px",
   height: "32px",
 };
+// The subscription filter list opens over the node table card below it. Both cards
+// create stacking contexts (backdrop-filter), so lift the filter card above the table.
+const NODE_FILTER_CARD_STYLE: CSSProperties = { position: "relative", zIndex: 1 };
 
 function parseBoolParam(value: string | null): boolean | undefined {
   if (value === null) {
@@ -307,19 +310,6 @@ export function NodesPage() {
   });
   const platforms = platformsQuery.data ?? EMPTY_PLATFORMS;
 
-  const subscriptionsQuery = useQuery({
-    queryKey: ["subscriptions", "all"],
-    queryFn: async () => {
-      const data = await listSubscriptions({
-        limit: 100000,
-        offset: 0,
-      });
-      return data.items;
-    },
-    staleTime: 60_000,
-  });
-  const subscriptions = subscriptionsQuery.data ?? [];
-
   useEffect(() => {
     const next = pickDebouncedTextFilters(draftFilters);
     if (next.tag_keyword === debouncedTextFilters.tag_keyword && next.egress_ip === debouncedTextFilters.egress_ip) {
@@ -336,7 +326,6 @@ export function NodesPage() {
     () => draftToActiveFilters({ ...draftFilters, ...debouncedTextFilters }),
     [draftFilters, debouncedTextFilters]
   );
-
   const nodesQuery = useQuery({
     queryKey: ["nodes", activeFilters, sortBy, sortOrder, page, pageSize],
     queryFn: ({ signal }) =>
@@ -706,7 +695,7 @@ export function NodesPage() {
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      <Card className="filter-card platform-list-card platform-directory-card">
+      <Card className="filter-card platform-list-card platform-directory-card" style={NODE_FILTER_CARD_STYLE}>
         <div className="list-card-header">
           <div>
             <h3>{t("节点列表")}</h3>
@@ -758,19 +747,12 @@ export function NodesPage() {
               <label htmlFor="node-subscription-id" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                 {t("来自此订阅")}
               </label>
-              <Select
+              <SubscriptionFilterSelect
                 id="node-subscription-id"
                 value={draftFilters.subscription_id}
-                onChange={(event) => handleFilterChange("subscription_id", event.target.value)}
+                onChange={(subscriptionId) => handleFilterChange("subscription_id", subscriptionId)}
                 style={NODE_FILTER_CONTROL_STYLE}
-              >
-                <option value="">{t("全部")}</option>
-                {subscriptions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
+              />
             </div>
 
             <div style={NODE_FILTER_ITEM_STYLE}>
