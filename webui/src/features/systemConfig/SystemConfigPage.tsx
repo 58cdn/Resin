@@ -931,6 +931,33 @@ export function SystemConfigPage() {
                 </section>
 
                 <section className="syscfg-section">
+                  <h4>{t("插件")}</h4>
+                  <div className="form-grid">
+                    <div className="field-group">
+                      <label className="field-label" style={{ margin: 0 }}>{t("插件目录")}</label>
+                      <Input readOnly disabled value={envBaseline.plugin_dir || t("无")} />
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label" style={{ margin: 0 }}>{t("外部插件")}</label>
+                      <Input
+                        readOnly
+                        disabled
+                        value={envBaseline.external_plugins_enabled ? t("已启用") : t("未启用（仅内置插件）")}
+                      />
+                    </div>
+                    <div className="field-group field-span-2">
+                      <label className="field-label" style={{ margin: 0 }}>{t("插件市场源")}</label>
+                      <Textarea
+                        readOnly
+                        disabled
+                        rows={2}
+                        value={envBaseline.plugin_marketplace_urls?.join("\n") || t("无")}
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="syscfg-section">
                   <h4>{t("服务鉴权状态")}</h4>
                   <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)", opacity: 0.7 }}>

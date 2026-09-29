@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "example.rate-limit",
+  "name": "Rate Limit",
+  "version": "1.0.0",
+  "description": "Token-bucket rate limit per account, client IP or platform. Requests over the limit are rejected with HTTP 429.",
+  "author": "Resin examples",
+  "license": "MIT",
+  "min_resin_version": "1.0.0",
+  "capabilities": {
+    "request_hook": true
+  },
+  "config_fields": [
+    {
+      "name": "key",
+      "label": "Limit by",
+      "type": "enum",
+      "enum_values": ["account", "client_ip", "platform", "account_or_ip"],
+      "default": "account",
+      "description": "account_or_ip limits by account when present, otherwise by client IP. Requests without an account are not limited when key is account."
+    },
+    {
+      "name": "rate_per_second",
+      "label": "Requests per second",
+      "type": "number",
+      "default": 10,
+      "required": true
+    },
+    {
+      "name": "burst",
+      "label": "Burst",
+      "type": "integer",
+      "default": 20,
+      "required": true,
+      "description": "Maximum number of requests allowed at once."
+    },
+    {
+      "name": "platforms",
+      "label": "Platforms",
+      "type": "string_list",
+      "description": "Only limit these platforms. Empty means every platform."
+    },
+    {
+      "name": "exempt_accounts",
+      "label": "Exempt accounts",
+      "type": "string_list"
+    },
+    {
+      "name": "reject_status",
+      "label": "Reject status",
+      "type": "integer",
+      "default": 429
+    },
+    {
+      "name": "reject_message",
+      "label": "Reject message",
+      "type": "string",
+      "default": "Rate limit exceeded"
+    }
+  ],
+  "runtimes": {
+    "any": {
+      "command": ["bin/rate-limit"]
+    }
+  }
+}

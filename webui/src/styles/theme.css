@@ -3531,3 +3531,56 @@ a {
     transform: translateY(-20px) scale(0.92);
   }
 }
+
+.plugin-description {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.plugin-id {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.plugin-field-hint {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.plugin-required-mark {
+  color: var(--danger);
+}
+
+.plugin-code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.plugin-meta-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.plugin-meta-list dt {
+  color: var(--text-muted);
+}
+
+.plugin-meta-list dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.plugin-meta-list a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--primary);
+}

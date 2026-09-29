@@ -9,6 +9,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/metrics"
+	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/internal/requestlog"
 	"github.com/Resinat/Resin/internal/service"
 )
@@ -126,6 +127,15 @@ func NewServerWithAddress(
 		authed.Handle("GET /api/v1/geoip/lookup", HandleGeoIPLookup(cp))
 		authed.Handle("POST /api/v1/geoip/lookup", HandleGeoIPLookupPost(cp))
 		authed.Handle("POST /api/v1/geoip/actions/update-now", HandleGeoIPUpdate(cp))
+
+		// Plugins.
+		authed.Handle("GET /api/v1/plugins", HandleListPlugins(cp))
+		authed.Handle("GET /api/v1/plugins/{id}", HandleGetPlugin(cp))
+		authed.Handle("PATCH /api/v1/plugins/{id}", HandleUpdatePlugin(cp))
+		authed.Handle("DELETE /api/v1/plugins/{id}", HandleDeletePlugin(cp))
+		authed.Handle("POST /api/v1/plugins/actions/rescan", HandleRescanPlugins(cp))
+		authed.Handle("GET /api/v1/plugin-marketplace", HandlePluginMarketplace(cp))
+		authed.Handle("POST /api/v1/plugin-marketplace/{id}/actions/install", HandleInstallMarketplacePlugin(cp))
 	}
 
 	// Request log endpoints (always registered if repo is available).
@@ -158,6 +168,13 @@ func NewServerWithAddress(
 
 	limitedAuthed := RequestBodyLimitMiddleware(apiMaxBodyBytes, authed)
 	mux.Handle("/api/", AuthMiddleware(adminToken, limitedAuthed))
+	if cp != nil {
+		// Plugin packages are larger than regular API bodies.
+		mux.Handle("POST /api/v1/plugins/actions/upload", AuthMiddleware(
+			adminToken,
+			RequestBodyLimitMiddleware(plugin.MaxPackageBytes, HandleUploadPlugin(cp)),
+		))
+	}
 	registerEmbeddedWebUI(mux)
 
 	srv := &http.Server{
