@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// ClassifyCloudflareChallenge classifies captured responses only. It does not
-// enable an active source, accept a challenge, or launch browser automation.
+// ClassifyCloudflareChallenge classifies captured responses. It does not accept
+// a challenge or launch browser automation.
 func ClassifyCloudflareChallenge(status int, headers http.Header, body []byte) string {
 	if strings.EqualFold(strings.TrimSpace(headers.Get("cf-mitigated")), "challenge") {
 		return "challenge"
@@ -17,7 +17,7 @@ func ClassifyCloudflareChallenge(status int, headers http.Header, body []byte) s
 	}
 	text := strings.ToLower(string(body))
 	challenge := strings.Contains(text, "just a moment") || strings.Contains(text, "challenge-platform") || strings.Contains(text, "cf-turnstile")
-	if challenge && (status == http.StatusForbidden || status == http.StatusServiceUnavailable || status >= 200 && status < 300) {
+	if challenge && (status == http.StatusForbidden || status == http.StatusServiceUnavailable) {
 		return "challenge"
 	}
 	if status == http.StatusForbidden {
@@ -29,7 +29,7 @@ func ClassifyCloudflareChallenge(status int, headers http.Header, body []byte) s
 	return "unknown"
 }
 
-// ClassifyAIRegion is a conservative parser for fixture/captured evidence. A
+// ClassifyAIRegion is a conservative parser for captured evidence. A
 // generic successful webpage is not evidence that inference or login works.
 // Supported-country membership alone never claims service availability.
 func ClassifyAIRegion(service string, status int, headers http.Header, body []byte, country string, supportedCountries []string) string {
@@ -45,7 +45,8 @@ func ClassifyAIRegion(service string, status int, headers http.Header, body []by
 			return "region_blocked"
 		}
 	}
-	if supportedCountries != nil && country != "" && !strings.EqualFold(country, "unknown") {
+	country = strings.ToUpper(strings.TrimSpace(country))
+	if supportedCountries != nil && countryCode(country) {
 		supported := false
 		for _, value := range supportedCountries {
 			if strings.EqualFold(country, value) {

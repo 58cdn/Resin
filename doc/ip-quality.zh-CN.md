@@ -1,4 +1,4 @@
-# IP 质量检测（P1 基础实现）
+# IP 质量检测（P1 插件实现）
 
 `resin.ip-quality` 是由现有 Plugin Manager 管理的首方 builtin。默认禁用；启用本身不发起检测，后台检测不支持。只有管理员显式调用检测 API 才执行所选数据源。结果仅供参考，不代表服务可用性或风控保证。
 
@@ -40,6 +40,36 @@ TTL 限制为 1 秒至 30 天；请求超时 100–60000 ms；目标 1–8 个�
 
 使用 DB-IP Lite 数据时，来源为 [DB-IP](https://db-ip.com/)，数据许可为 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。本功能不会把其他提供商的库识别为 DB-IP 来源证明；管理员需保留实际使用库的来源与许可。更完整的 City/ASN 数据库自动分发不在本阶段交付范围。
 
+### Cloudflare challenge 与 AI region（显式配置）
+
+两个源默认关闭、没有默认目标；仅加入 `enabled_sources` 还不够，必须显式配置目标。
+所有目标沿用公网 HTTPS、DNS 固定、拒绝重定向与响应体上限策略，经指定节点访问。
+下面的 example.com 只是配置格式示意，须替换为你已确认可使用的观测端点：
+
+```json
+{
+  "enabled_sources": ["db-ip", "egress-consistency", "cloudflare-challenge", "ai-region"],
+  "cloudflare_challenge_urls": ["https://example.com/check"],
+  "ai_region_targets": {
+    "chatgpt": {"url": "https://example.com/chatgpt-observation", "supported_countries": ["US", "GB"]},
+    "claude": {"url": "https://example.com/claude-observation"}
+  }
+}
+```
+
+`cloudflare_challenge_urls` 最多 8 个目标。`cf-mitigated: challenge` 是挑战证据；
+403/503 的挑战页面标记也可识别。其他 403 为 blocked，正常 2xx 为 none，模糊情况 unknown。
+部分失败保留其他目标的有效证据，不把失败当正常。
+
+`ai_region_targets` 仅接受 claude/chatgpt，每项一个 URL 与可选的明确支持地区列表。
+从成功 trace 响应读取 `loc`，已知地区不在用户提供的列表时为 region_blocked；
+地区在支持列表中仍为 unknown，不能据此保证登录、账户或推理可用。
+明确的地区阻断响应为 region_blocked，挑战/429 为 risky。通用成功 HTML 不会判定 available。
+只有配置端点返回 application/json 且明确给出 `{"service":"chatgpt","available":true}`
+这样的匹配服务契约才判定 available；这是本插件支持的观测契约，不声称是供应商官方 API。
+管理员负责选择合法稳定端点、维护地区列表并理解第三方证据的局限。
+目标配置可由管理员插件 API 读取，URL 中不要放密钥、会话或其他凭据；本阶段不支持带认证的探测。
+
 ## 缓存与生命周期
 
 by-IP 缓存按规范化出口 IP/source 共享；via-node 按 node hash/source 隔离并绑定观测出口。有效缓存直接复用；force 跳过缓存但合并正在运行的相同检查。配置更新替换引擎，禁用/Manager Stop 取消旧引擎任务。出口快照同时绑定最近成功探测的时间版本，新的成功出口采样（包括 IP 未变）会保守失效 via-node 旧缓存，从而覆盖 A→B→A 回切；删除节点清理 node 记录；IP 记录按 TTL 清理。
@@ -48,10 +78,10 @@ by-IP 缓存按规范化出口 IP/source 共享；via-node 按 node hash/source 
 
 ## 明确未实现
 
-本提交是 P1 基础子集，不能视为提案的所有 P1 数据源已验收。
+本提交实现 P1 插件框架与可独立验证的数据源。以下仍有明确边界：
 
 - ippure：仅报告 unavailable；接口与许可尚未确认，不发请求。
-- Cloudflare challenge、AI region：已实现离线响应分类函数与 fixture 测试；线上 source 仍报告 unavailable，不发请求。挑战头/页面特征、地区封锁和未知响应可分类，但没有上线未经确认的探测端点或维护官方地区名单，不能宣称完整服务可用性检测。
+- Cloudflare challenge、AI region：显式配置端点适配与 fixtures 已实现；不内置未经确认的第三方端点或官方地区名单，也不能检测账户级可用性。
 - 不读取 Scamalytics/ipdata/Radar 密钥，也不调用其 API；后续需另行实现和测试。配置中不接受密钥字段。
 - P2：质量专用 WebUI、批量/后台任务、配额/源熔断、风险评分、需密钥情报源。
 - P3：Platform 过滤与节点列表质量过滤。

@@ -17,9 +17,9 @@ const geoIPAttribution = "Offline GeoIP provider; DB-IP data, when configured, i
 var sourceCatalog = map[string]SourceStatus{
 	"egress-consistency":   {Name: "egress-consistency", Kind: SourceKindViaNode, Available: true},
 	"db-ip":                {Name: "db-ip", Kind: SourceKindByIP, Available: true, Attribution: geoIPAttribution},
-	"ippure":               {Name: "ippure", Kind: SourceKindByIP, Reason: "unavailable: stable API and usage terms are not verified"},
-	"cloudflare-challenge": {Name: "cloudflare-challenge", Kind: SourceKindViaNode, Reason: "unavailable: active challenge probing is not implemented"},
-	"ai-region":            {Name: "ai-region", Kind: SourceKindViaNode, Reason: "unavailable: stable region probes are not verified"},
+	"ippure":               {Name: "ippure", Kind: SourceKindViaNode, Reason: "unavailable: stable API and usage terms are not verified"},
+	"cloudflare-challenge": {Name: "cloudflare-challenge", Kind: SourceKindViaNode, Reason: cloudflareConfigurationReason},
+	"ai-region":            {Name: "ai-region", Kind: SourceKindViaNode, Reason: aiRegionConfigurationReason},
 	"scamalytics":          {Name: "scamalytics", Kind: SourceKindByIP, RequiresKey: true, Reason: "unavailable: keyed provider is not implemented in P1"},
 	"ipdata":               {Name: "ipdata", Kind: SourceKindByIP, RequiresKey: true, Reason: "unavailable: keyed provider is not implemented in P1"},
 	"cloudflare-radar":     {Name: "cloudflare-radar", Kind: SourceKindByIP, RequiresKey: true, Reason: "unavailable: keyed provider is not implemented in P1"},

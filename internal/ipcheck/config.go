@@ -18,22 +18,25 @@ const (
 )
 
 type Config struct {
-	EnabledSources      []string `json:"enabled_sources"`
-	IPResultTTL         string   `json:"ip_result_ttl"`
-	NodeResultTTL       string   `json:"node_result_ttl"`
-	RequestTimeoutMS    int      `json:"request_timeout_ms"`
-	ConsistencyTargets  []string `json:"consistency_targets"`
-	BackgroundEnabled   bool     `json:"background_enabled"`
-	MaxConcurrentChecks int      `json:"max_concurrent_checks"`
-	MaxCacheEntries     int      `json:"max_cache_entries"`
-	SourcePriority      []string `json:"source_priority"`
+	EnabledSources          []string                        `json:"enabled_sources"`
+	IPResultTTL             string                          `json:"ip_result_ttl"`
+	NodeResultTTL           string                          `json:"node_result_ttl"`
+	RequestTimeoutMS        int                             `json:"request_timeout_ms"`
+	ConsistencyTargets      []string                        `json:"consistency_targets"`
+	CloudflareChallengeURLs []string                        `json:"cloudflare_challenge_urls"`
+	AIRegionTargets         map[string]AIRegionTargetConfig `json:"ai_region_targets"`
+	BackgroundEnabled       bool                            `json:"background_enabled"`
+	MaxConcurrentChecks     int                             `json:"max_concurrent_checks"`
+	MaxCacheEntries         int                             `json:"max_cache_entries"`
+	SourcePriority          []string                        `json:"source_priority"`
 }
 
 func DefaultConfig() Config {
 	return Config{
 		EnabledSources: []string{"egress-consistency", "db-ip"},
 		IPResultTTL:    "24h", NodeResultTTL: "6h", RequestTimeoutMS: 10000,
-		ConsistencyTargets:  []string{"https://cloudflare.com/cdn-cgi/trace"},
+		ConsistencyTargets:      []string{"https://cloudflare.com/cdn-cgi/trace"},
+		CloudflareChallengeURLs: []string{}, AIRegionTargets: map[string]AIRegionTargetConfig{},
 		MaxConcurrentChecks: 8, MaxCacheEntries: 4096,
 		SourcePriority: []string{"db-ip", "egress-consistency"},
 	}
@@ -114,6 +117,9 @@ func (cfg Config) Validate() error {
 			}
 			seen[name] = true
 		}
+	}
+	if err := validateOptionalTargets(cfg.CloudflareChallengeURLs, cfg.AIRegionTargets); err != nil {
+		return err
 	}
 	return nil
 }
@@ -231,6 +237,13 @@ func validateConfigObject(raw []byte) error {
 		}
 		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return invalid("configuration fields cannot be null")
+		}
+		// Optional endpoint maps contain security-relevant nested fields too.
+		// Reject ambiguous duplicate keys and null policies at every object level.
+		if trimmed := bytes.TrimSpace(value); len(trimmed) > 0 && trimmed[0] == '{' {
+			if err := validateConfigObject(trimmed); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := decoder.Token(); err != nil {

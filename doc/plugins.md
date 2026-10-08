@@ -416,5 +416,7 @@ unknown. Network targets are public HTTPS, DNS-pinned through the selected node,
 and redirects are rejected. No IP quality result changes node health or routing.
 See [the IP quality guide](ip-quality.zh-CN.md) for configuration, five authenticated
 API routes, DB-IP attribution, cache semantics, and explicit unimplemented scope.
-This foundation does not implement AI availability, challenge classification,
-ippure, quality-specific UI, background checks, or platform filtering.
+Optional Cloudflare challenge and AI region observation adapters require explicitly
+configured public HTTPS targets and remain disabled by default. Region membership
+alone is never treated as service availability. ippure, quality-specific UI,
+background checks, and platform filtering are not implemented.

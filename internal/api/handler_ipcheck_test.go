@@ -28,6 +28,7 @@ type ipCheckAPIHost struct {
 	geoCalls     atomic.Int64
 	viaCalls     atomic.Int64
 	viaError     error
+	viaResponse  func(*http.Request) (*http.Response, error)
 }
 
 func (h *ipCheckAPIHost) Capability(name string) (any, bool) {
@@ -47,8 +48,11 @@ func (h *ipCheckAPIHost) GeoIPLookup(_ context.Context, _ netip.Addr) (ipcheck.G
 	return ipcheck.GeoIPInfo{Country: "us", City: "Fixture City", ASOrg: "Fixture Network"}, h.geoAvailable
 }
 
-func (h *ipCheckAPIHost) DoViaNode(_ context.Context, _ node.Hash, _ *http.Request) (*http.Response, error) {
+func (h *ipCheckAPIHost) DoViaNode(_ context.Context, _ node.Hash, req *http.Request) (*http.Response, error) {
 	h.viaCalls.Add(1)
+	if h.viaResponse != nil {
+		return h.viaResponse(req)
+	}
 	if h.viaError != nil {
 		return nil, h.viaError
 	}
@@ -231,7 +235,7 @@ func TestIPCheckAPI_NodeCheckAndUnavailableSource(t *testing.T) {
 	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/"+ipCheckTestHash.Hex()+"/ip-check", nil, true)
 	tpExpectStatus(t, rec, http.StatusOK)
 
-	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/ip-checks/lookup", `{"ip":"8.8.8.8","sources":["ippure"]}`, true)
+	rec = doJSONRequest(t, srv, http.MethodPost, "/api/v1/ip-checks/lookup", `{"ip":"8.8.8.8","sources":["ipdata"]}`, true)
 	tpExpectStatus(t, rec, http.StatusOK)
 	result = decodeIPCheckResult(t, rec.Body.Bytes())
 	if len(result.Sources) != 1 || result.Sources[0].OK || result.Sources[0].Status != "unavailable" || result.Summary.FraudScore != nil {
@@ -278,4 +282,50 @@ func TestIPCheckAPI_SourceStatusAndErrorRedaction(t *testing.T) {
 			t.Fatalf("IP check API leaked %q", denied)
 		}
 	}
+}
+
+func TestIPCheckAPI_OptionalSourcesConfiguredPostGet(t *testing.T) {
+	srv, _, manager, host := newIPCheckAPIServer(t, true)
+	host.viaResponse = func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "challenge.example.com" {
+			return &http.Response{StatusCode: 403, Header: http.Header{"Cf-Mitigated": []string{"challenge"}}, Body: io.NopCloser(strings.NewReader("fixture challenge"))}, nil
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ip=8.8.8.8\nloc=CN\n"))}, nil
+	}
+	cfg := json.RawMessage(`{"enabled_sources":["cloudflare-challenge","ai-region"],"cloudflare_challenge_urls":["https://challenge.example.com/check"],"ai_region_targets":{"chatgpt":{"url":"https://ai.example.com/trace","supported_countries":["US"]}}}`)
+	if _, err := manager.Update(context.Background(), builtin.IPQualityID, plugin.Update{Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/ip-checks/sources", nil, true)
+	tpExpectStatus(t, rec, http.StatusOK)
+	var statuses struct {
+		Items []ipcheck.SourceStatus `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &statuses); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range statuses.Items {
+		if source.Name == "cloudflare-challenge" || source.Name == "ai-region" {
+			if !source.Available || !source.Enabled {
+				t.Fatalf("configured optional source unavailable: %+v", source)
+			}
+		}
+	}
+	path := "/api/v1/nodes/" + ipCheckTestHash.Hex()
+	rec = doJSONRequest(t, srv, http.MethodPost, path+"/actions/check-ip", `{}`, true)
+	tpExpectStatus(t, rec, http.StatusOK)
+	result := decodeIPCheckResult(t, rec.Body.Bytes())
+	if result.Summary.CFChallenge != "challenge" || result.Summary.Services["chatgpt"] != "region_blocked" || result.Summary.Services["claude"] != "unknown" {
+		t.Fatalf("unexpected optional classification: %+v", result)
+	}
+	rec = doJSONRequest(t, srv, http.MethodGet, path+"/ip-check", nil, true)
+	tpExpectStatus(t, rec, http.StatusOK)
+	cached := decodeIPCheckResult(t, rec.Body.Bytes())
+	if len(cached.Sources) != 2 || cached.Summary.CFChallenge != "challenge" || cached.Summary.Services["chatgpt"] != "region_blocked" {
+		t.Fatalf("optional cache lost: %+v", cached)
+	}
+	if host.viaCalls.Load() != 2 {
+		t.Fatalf("GET performed requests: %d", host.viaCalls.Load())
+	}
+	tpExpectError(t, doJSONRequest(t, srv, http.MethodPost, "/api/v1/ip-checks/lookup", `{"ip":"8.8.8.8","sources":["ai-region"]}`, true), http.StatusBadRequest, "INVALID_ARGUMENT", "")
 }

@@ -2915,7 +2915,10 @@ builtin constructors may receive narrow host capabilities; external plugin RPC i
 unchanged. A Manager-resolved service supports authenticated manual checks and
 cache-only reads. Egress consistency executes through a controlled node outbound
 with public-IP DNS pinning and no redirects; offline geographic information uses
-the existing GeoIP reader lifecycle. Neither operation reports probe results or
+the existing GeoIP reader lifecycle. Optional Cloudflare challenge and AI region
+observation adapters require explicit HTTPS endpoints and remain disabled by
+default; supported-region evidence alone never claims service availability.
+None of these operations reports probe results or
 changes circuit breakers, latency, or routing. Unknown fields remain unknown.
 
 Raw source results are cached by IP/source or node/source in `cache.db`, merged

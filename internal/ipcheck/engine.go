@@ -72,6 +72,8 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	}
 	cfg.EnabledSources = append([]string(nil), cfg.EnabledSources...)
 	cfg.ConsistencyTargets = append([]string(nil), cfg.ConsistencyTargets...)
+	cfg.CloudflareChallengeURLs = append([]string(nil), cfg.CloudflareChallengeURLs...)
+	cfg.AIRegionTargets = cloneAIRegionTargets(cfg.AIRegionTargets)
 	cfg.SourcePriority = append([]string(nil), cfg.SourcePriority...)
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{host: host, store: store, config: cfg, ctx: ctx, cancel: cancel, sem: make(chan struct{}, cfg.MaxConcurrentChecks), sources: map[string]Source{}, enabled: map[string]bool{}, flights: map[cacheKey]*flight{}, nodes: map[node.Hash]nodeState{}, cache: map[cacheKey]*list.Element{}, lru: list.New(), closedDone: make(chan struct{})}
@@ -80,6 +82,8 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	e.fingerprint = hex.EncodeToString(digest[:])
 	e.sources["egress-consistency"] = &consistencySource{targets: cfg.ConsistencyTargets}
 	e.sources["db-ip"] = &geoIPSource{host: host}
+	e.sources["cloudflare-challenge"] = &cloudflareChallengeSource{targets: cfg.CloudflareChallengeURLs}
+	e.sources["ai-region"] = &aiRegionSource{targets: cfg.AIRegionTargets}
 	for _, name := range cfg.EnabledSources {
 		e.enabled[name] = true
 	}
@@ -89,15 +93,28 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 func (e *Engine) Sources() []SourceStatus {
 	statuses := make([]SourceStatus, 0, len(sourceCatalog))
 	for _, known := range sourceCatalog {
-		status := known
-		status.Enabled = e.enabled[known.Name] && status.Available
-		if status.Available && !status.Enabled {
-			status.Reason = "disabled by configuration"
-		}
-		statuses = append(statuses, status)
+		statuses = append(statuses, e.sourceStatus(known.Name))
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
 	return statuses
+}
+
+func (e *Engine) sourceStatus(name string) SourceStatus {
+	status := sourceCatalog[name]
+	switch name {
+	case "cloudflare-challenge":
+		status.Available = len(e.config.CloudflareChallengeURLs) > 0
+	case "ai-region":
+		status.Available = len(e.config.AIRegionTargets) > 0
+	}
+	status.Enabled = e.enabled[name] && status.Available
+	if status.Available {
+		status.Reason = ""
+		if !status.Enabled {
+			status.Reason = "disabled by configuration"
+		}
+	}
+	return status
 }
 
 func (e *Engine) CheckNode(ctx context.Context, hash node.Hash, names []string, force bool) (*Result, error) {
@@ -451,10 +468,10 @@ func (e *Engine) run(ctx context.Context, f *flight, force bool) {
 }
 
 func (e *Engine) execute(ctx context.Context, f *flight) *SourceResult {
-	status := sourceCatalog[f.key.source]
+	status := e.sourceStatus(f.key.source)
 	result := &SourceResult{Status: "unavailable", Error: status.Reason}
 	source := e.sources[f.key.source]
-	if source != nil && e.enabled[f.key.source] {
+	if source != nil && status.Enabled {
 		request := f.request
 		request.HTTP = &http.Client{Transport: viaNodeTransport{host: e.host, hash: request}, Timeout: e.timeout(), CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 		var err error
@@ -462,8 +479,6 @@ func (e *Engine) execute(ctx context.Context, f *flight) *SourceResult {
 		if err != nil || result == nil {
 			return e.failure(f, err)
 		}
-	} else if source != nil {
-		result.Error = "source is disabled by configuration"
 	}
 	return e.stamp(f, result)
 }

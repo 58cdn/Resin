@@ -21,6 +21,8 @@ func ipQualityBuiltin() plugin.Builtin {
 			SchemaVersion: pluginsdk.SchemaVersion, ID: IPQualityID, Name: "IP Quality", Version: "1.0.0",
 			Description: "Manual, cold-path IP quality checks. Offline GeoIP and opt-in node egress consistency; no background checks.", Author: "Resin", License: "MIT",
 			ConfigFields: []pluginsdk.ConfigField{
+				{Name: "cloudflare_challenge_urls", Label: "Optional Cloudflare challenge URLs", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Explicit public HTTPS targets; no defaults, only used when cloudflare-challenge is enabled and manually requested."},
+				{Name: "ai_region_targets", Label: "Optional AI region observation targets", Type: pluginsdk.FieldJSON, Default: raw(`{}`), Description: "Map of claude/chatgpt to {url,supported_countries?}; no default endpoints or country lists. Supported region alone does not prove availability."},
 				{Name: "max_concurrent_checks", Label: "Concurrent checks", Type: pluginsdk.FieldInteger, Default: raw(`8`)},
 				{Name: "max_cache_entries", Label: "Memory cache entries", Type: pluginsdk.FieldInteger, Default: raw(`4096`)},
 				{Name: "source_priority", Label: "Source priority", Type: pluginsdk.FieldJSON, Default: raw(`["db-ip","egress-consistency"]`)},
