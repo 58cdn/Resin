@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "Example Resin plugins",
+  "plugins": [
+    {
+      "id": "example.rate-limit",
+      "name": "Rate Limit",
+      "version": "1.0.0",
+      "description": "Token-bucket rate limit per account, client IP or platform.",
+      "author": "Resin examples",
+      "homepage": "https://github.com/Resinat/Resin/tree/master/examples/plugins/rate-limit",
+      "license": "MIT",
+      "tags": ["security", "request-hook"],
+      "min_resin_version": "1.0.0",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "amd64",
+          "url": "example.rate-limit-1.0.0-linux-amd64.tar.gz",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "url": "example.rate-limit-1.0.0-linux-arm64.tar.gz",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "os": "windows",
+          "arch": "amd64",
+          "url": "https://downloads.example.com/resin/example.rate-limit-1.0.0-windows-amd64.zip",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "example.jsonl-exporter",
+      "name": "JSONL Event Exporter",
+      "version": "1.0.0",
+      "description": "Appends Resin events to daily JSON Lines files. Requires Python 3.",
+      "author": "Resin examples",
+      "license": "MIT",
+      "tags": ["events", "python"],
+      "artifacts": [
+        {
+          "os": "any",
+          "arch": "any",
+          "url": "example.jsonl-exporter-1.0.0.zip",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  ]
+}

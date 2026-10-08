@@ -113,6 +113,18 @@ func (e *NodeEntry) RemoveSubscriptionID(subID string) (empty bool) {
 	return len(e.subscriptionIDs) == 0
 }
 
+// HasSubscriptionID reports whether subID references this node (thread-safe).
+func (e *NodeEntry) HasSubscriptionID(subID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, id := range e.subscriptionIDs {
+		if id == subID {
+			return true
+		}
+	}
+	return false
+}
+
 // SubscriptionCount returns the number of subscriptions referencing this node.
 func (e *NodeEntry) SubscriptionCount() int {
 	e.mu.RLock()

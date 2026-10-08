@@ -49,7 +49,9 @@ func HandleListSubscriptions(cp *service.ControlPlaneService) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		subs, err := cp.ListSubscriptions(enabled)
+		// Keyword filtering and sorting do not use node counts, and counting walks
+		// every managed node, so counts are filled in only for the returned page.
+		subs, err := cp.ListSubscriptionsWithoutNodeCounts(enabled)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -74,7 +76,14 @@ func HandleListSubscriptions(cp *service.ControlPlaneService) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		WritePage(w, http.StatusOK, subs, pg)
+		items := PaginateSlice(subs, pg)
+		cp.FillSubscriptionNodeCounts(items)
+		WriteJSON(w, http.StatusOK, PageResponse[service.SubscriptionResponse]{
+			Items:  items,
+			Total:  len(subs),
+			Limit:  pg.Limit,
+			Offset: pg.Offset,
+		})
 	}
 }
 

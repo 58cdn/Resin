@@ -7,6 +7,7 @@ import {
   LogOut,
   Logs,
   Network,
+  Puzzle,
   Regex,
   Rss,
   Server,
@@ -37,6 +38,7 @@ const navItems: NavItem[] = [
   { label: "请求头规则", path: "/rules", icon: Regex },
   { label: "请求日志", path: "/request-logs", icon: Logs },
   { label: "资源", path: "/resources", icon: Database },
+  { label: "插件", path: "/plugins", icon: Puzzle },
   { label: "系统配置", path: "/system-config", icon: Settings },
 ];
 

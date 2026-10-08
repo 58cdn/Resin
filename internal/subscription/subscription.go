@@ -151,6 +151,10 @@ type Subscription struct {
 	// configVersion is incremented whenever refresh-input-related config changes
 	// (URL/source/content/update-interval). Scheduler uses it for stale-guard.
 	configVersion atomic.Int64
+
+	// appliedContentHash fingerprints the source content of the last applied
+	// replace-mode refresh (nil when unknown). Runtime-only; written under opMu.
+	appliedContentHash atomic.Pointer[[16]byte]
 }
 
 // NewSubscription creates a Subscription with an empty ManagedNodes map.
@@ -187,6 +191,26 @@ func (s *Subscription) LastAppliedSeq() int64 { return s.lastAppliedSeq.Load() }
 
 // MarkAppliedAttempt records the latest applied refresh attempt sequence.
 func (s *Subscription) MarkAppliedAttempt(seq int64) { s.lastAppliedSeq.Store(seq) }
+
+// AppliedContentHash returns the fingerprint recorded by the last applied
+// replace-mode refresh, if any.
+func (s *Subscription) AppliedContentHash() ([16]byte, bool) {
+	h := s.appliedContentHash.Load()
+	if h == nil {
+		return [16]byte{}, false
+	}
+	return *h, true
+}
+
+// SetAppliedContentHash records the fingerprint of freshly applied content.
+// Pass ok=false to forget it (the managed view no longer mirrors the content).
+func (s *Subscription) SetAppliedContentHash(h [16]byte, ok bool) {
+	if !ok {
+		s.appliedContentHash.Store(nil)
+		return
+	}
+	s.appliedContentHash.Store(&h)
+}
 
 // WithOpLock runs fn under the subscription operation lock.
 func (s *Subscription) WithOpLock(fn func()) {

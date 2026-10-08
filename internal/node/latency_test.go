@@ -1,6 +1,7 @@
 package node
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -66,6 +67,50 @@ func TestLatencyTable_BoundedEviction_RegularLRU(t *testing.T) {
 	}
 	if _, ok := lt.GetDomainStats("c.com"); !ok {
 		t.Fatal("expected c.com to remain in regular LRU")
+	}
+}
+
+func TestLatencyTable_RegularSlotsAllocatedLazilyAndCapped(t *testing.T) {
+	lt := NewLatencyTable(12)
+	if cap(lt.regular) != 0 {
+		t.Fatalf("new table should not preallocate regular slots, cap=%d", cap(lt.regular))
+	}
+
+	lt.UpdateClassified("authority.com", 10*time.Millisecond, 30*time.Second, true)
+	if cap(lt.regular) != 0 {
+		t.Fatalf("authority updates should not allocate regular slots, cap=%d", cap(lt.regular))
+	}
+
+	for i := 0; i < 20; i++ {
+		lt.Update(fmt.Sprintf("d%d.com", i), time.Duration(i+1)*time.Millisecond, 30*time.Second)
+		if cap(lt.regular) > 12 {
+			t.Fatalf("regular capacity must stay within max entries, cap=%d", cap(lt.regular))
+		}
+	}
+	if got := lt.Size(); got != 13 {
+		t.Fatalf("expected 12 regular + 1 authority entries, got %d", got)
+	}
+	if _, ok := lt.GetDomainStats("d19.com"); !ok {
+		t.Fatal("expected latest regular entry to be present")
+	}
+}
+
+func TestLatencyTable_ReusesFreedRegularSlotBeforeGrowing(t *testing.T) {
+	lt := NewLatencyTable(4)
+	lt.Update("a.com", 10*time.Millisecond, 30*time.Second)
+	lt.Update("b.com", 10*time.Millisecond, 30*time.Second)
+
+	// Migrating a.com to the authority partition frees its regular slot.
+	lt.UpdateClassified("a.com", 10*time.Millisecond, 30*time.Second, true)
+	lt.Update("c.com", 10*time.Millisecond, 30*time.Second)
+
+	if len(lt.regular) != 2 {
+		t.Fatalf("expected freed regular slot to be reused, len=%d", len(lt.regular))
+	}
+	for _, d := range []string{"a.com", "b.com", "c.com"} {
+		if _, ok := lt.GetDomainStats(d); !ok {
+			t.Fatalf("expected %s to be present", d)
+		}
 	}
 }
 

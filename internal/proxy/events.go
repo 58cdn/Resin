@@ -101,6 +101,9 @@ func (NoOpEventEmitter) EmitRequestLog(RequestLogEntry)           {}
 type ConfigAwareEventEmitter struct {
 	Base              EventEmitter
 	RequestLogEnabled func() bool
+	// RequestObserver, when set, receives every finished request (without
+	// detail payloads) regardless of RequestLogEnabled. It must not block.
+	RequestObserver func(RequestLogEntry)
 
 	// Reverse proxy request-log detail controls (hot-reload friendly).
 	ReverseProxyLogDetailEnabled       func() bool
@@ -190,6 +193,11 @@ func (e ConfigAwareEventEmitter) EmitRequestFinished(ev RequestFinishedEvent) {
 }
 
 func (e ConfigAwareEventEmitter) EmitRequestLog(ev RequestLogEntry) {
+	if e.RequestObserver != nil {
+		observed := ev
+		clearReverseDetailPayload(&observed)
+		e.RequestObserver(observed)
+	}
 	if e.RequestLogEnabled != nil && !e.RequestLogEnabled() {
 		return
 	}

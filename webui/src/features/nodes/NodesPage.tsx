@@ -17,10 +17,10 @@ import { formatApiErrorMessage } from "../../lib/error-message";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
-import { listSubscriptions } from "../subscriptions/api";
 import { getNode, listNodes, probeEgress, probeLatency } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
+import { SubscriptionFilterSelect } from "./SubscriptionFilterSelect";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
@@ -36,6 +36,8 @@ type NodeFilterDraft = {
   status: NodeStatusFilter;
 };
 
+type DebouncedTextFilters = Pick<NodeFilterDraft, "tag_keyword" | "egress_ip">;
+
 const defaultFilterDraft: NodeFilterDraft = {
   platform_id: "",
   subscription_id: "",
@@ -46,6 +48,8 @@ const defaultFilterDraft: NodeFilterDraft = {
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000, 5000] as const;
+// Node list requests are expensive on large pools; apply text filters once typing pauses.
+const TEXT_FILTER_DEBOUNCE_MS = 300;
 const EMPTY_PLATFORMS: Platform[] = [];
 const NODE_FILTER_ITEM_STYLE: CSSProperties = {
   flex: "1 1 120px",
@@ -61,6 +65,9 @@ const NODE_FILTER_CONTROL_STYLE: CSSProperties = {
   minHeight: "32px",
   height: "32px",
 };
+// The subscription filter list opens over the node table card below it. Both cards
+// create stacking contexts (backdrop-filter), so lift the filter card above the table.
+const NODE_FILTER_CARD_STYLE: CSSProperties = { position: "relative", zIndex: 1 };
 
 function parseBoolParam(value: string | null): boolean | undefined {
   if (value === null) {
@@ -178,6 +185,13 @@ function draftToActiveFilters(draft: NodeFilterDraft): NodeListFilters {
   };
 }
 
+function pickDebouncedTextFilters(draft: NodeFilterDraft): DebouncedTextFilters {
+  return {
+    tag_keyword: draft.tag_keyword.trim(),
+    egress_ip: draft.egress_ip.trim(),
+  };
+}
+
 function firstTag(node: { display_tag?: string; tags: { tag: string }[] }): string {
   if (node.display_tag && node.display_tag.trim()) {
     return node.display_tag;
@@ -264,8 +278,8 @@ export function NodesPage() {
   const { locale, t } = useI18n();
   const location = useLocation();
   const [draftFilters, setDraftFilters] = useState<NodeFilterDraft>(() => draftFromQuery(location.search));
-  const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
-    draftToActiveFilters(draftFromQuery(location.search))
+  const [debouncedTextFilters, setDebouncedTextFilters] = useState<DebouncedTextFilters>(() =>
+    pickDebouncedTextFilters(draftFromQuery(location.search))
   );
   const [sortBy, setSortBy] = useState<NodeSortBy>("tag");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
@@ -296,29 +310,35 @@ export function NodesPage() {
   });
   const platforms = platformsQuery.data ?? EMPTY_PLATFORMS;
 
-  const subscriptionsQuery = useQuery({
-    queryKey: ["subscriptions", "all"],
-    queryFn: async () => {
-      const data = await listSubscriptions({
-        limit: 100000,
-        offset: 0,
-      });
-      return data.items;
-    },
-    staleTime: 60_000,
-  });
-  const subscriptions = subscriptionsQuery.data ?? [];
+  useEffect(() => {
+    const next = pickDebouncedTextFilters(draftFilters);
+    if (next.tag_keyword === debouncedTextFilters.tag_keyword && next.egress_ip === debouncedTextFilters.egress_ip) {
+      return;
+    }
+    const timeoutID = window.setTimeout(() => {
+      setDebouncedTextFilters(next);
+      setPage(0);
+    }, TEXT_FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutID);
+  }, [draftFilters, debouncedTextFilters]);
 
+  const activeFilters = useMemo(
+    () => draftToActiveFilters({ ...draftFilters, ...debouncedTextFilters }),
+    [draftFilters, debouncedTextFilters]
+  );
   const nodesQuery = useQuery({
     queryKey: ["nodes", activeFilters, sortBy, sortOrder, page, pageSize],
-    queryFn: () =>
-      listNodes({
-        ...activeFilters,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-        limit: pageSize,
-        offset: page * pageSize,
-      }),
+    queryFn: ({ signal }) =>
+      listNodes(
+        {
+          ...activeFilters,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          limit: pageSize,
+          offset: page * pageSize,
+        },
+        signal
+      ),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   });
@@ -486,19 +506,22 @@ export function NodesPage() {
   };
 
   const handleFilterChange = (key: keyof NodeFilterDraft, value: string) => {
-    setDraftFilters((prev) => {
-      const next = { ...prev, [key]: value };
-      setActiveFilters(draftToActiveFilters(next));
-      setSelectedNodeHash("");
-      setDrawerOpen(false);
-      setPage(0);
-      return next;
-    });
+    const next = { ...draftFilters, [key]: value };
+    setDraftFilters(next);
+    setSelectedNodeHash("");
+    setDrawerOpen(false);
+    if (key === "tag_keyword" || key === "egress_ip") {
+      // Applied by the debounce effect once typing pauses.
+      return;
+    }
+    // Selects apply immediately, together with any pending text edit.
+    setDebouncedTextFilters(pickDebouncedTextFilters(next));
+    setPage(0);
   };
 
   const resetFilters = () => {
     setDraftFilters(defaultFilterDraft);
-    setActiveFilters(draftToActiveFilters(defaultFilterDraft));
+    setDebouncedTextFilters(pickDebouncedTextFilters(defaultFilterDraft));
     setSelectedNodeHash("");
     setDrawerOpen(false);
     setPage(0);
@@ -672,7 +695,7 @@ export function NodesPage() {
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      <Card className="filter-card platform-list-card platform-directory-card">
+      <Card className="filter-card platform-list-card platform-directory-card" style={NODE_FILTER_CARD_STYLE}>
         <div className="list-card-header">
           <div>
             <h3>{t("节点列表")}</h3>
@@ -724,19 +747,12 @@ export function NodesPage() {
               <label htmlFor="node-subscription-id" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                 {t("来自此订阅")}
               </label>
-              <Select
+              <SubscriptionFilterSelect
                 id="node-subscription-id"
                 value={draftFilters.subscription_id}
-                onChange={(event) => handleFilterChange("subscription_id", event.target.value)}
+                onChange={(subscriptionId) => handleFilterChange("subscription_id", subscriptionId)}
                 style={NODE_FILTER_CONTROL_STYLE}
-              >
-                <option value="">{t("全部")}</option>
-                {subscriptions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
+              />
             </div>
 
             <div style={NODE_FILTER_ITEM_STYLE}>

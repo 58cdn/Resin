@@ -289,6 +289,17 @@ curl "http://127.0.0.1:2260/my-token/MyPlatform/https/api.example.com/v1/orders"
 
 ---
 
+## 🧩 插件
+
+插件可以在不修改 Resin 源码的前提下扩展功能：在路由前检查每个代理请求（拒绝请求、改写 Platform/Account、设置或移除上游请求头），以及订阅请求与粘性租约事件。
+
+- **内置插件**：在 WebUI 的 **插件** 页面开箱即用，包括 `resin.access-control`（允许/拒绝规则）、`resin.header-rewrite`（上游请求头改写）和 `resin.webhook`（把事件推送到你的 HTTP 端点）。
+- **插件包**：可用任意语言编写的子进程，通过 stdin/stdout 与 Resin 进行 JSON-RPC 通信。可以上传 `.zip` / `.tar.gz` 安装、复制到插件目录，或从插件市场（静态 JSON 索引，通过 `RESIN_PLUGIN_MARKETPLACE_URLS` 配置）安装。插件包以 Resin 的权限运行，因此默认关闭，需设置 `RESIN_EXTERNAL_PLUGINS_ENABLED=true` 开启。
+
+协议、清单与插件市场格式见 [doc/plugins.zh-CN.md](doc/plugins.zh-CN.md)，示例（Go 限流插件、Python 事件导出插件）见 [examples/plugins](examples/plugins)。
+
+---
+
 ## 其他部署方式
 
 <details>

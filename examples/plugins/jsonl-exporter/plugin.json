@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "id": "example.jsonl-exporter",
+  "name": "JSONL Event Exporter",
+  "version": "1.0.0",
+  "description": "Appends Resin events to daily JSON Lines files in the plugin data directory. Written in Python with no dependencies to show the raw protocol.",
+  "author": "Resin examples",
+  "license": "MIT",
+  "capabilities": {
+    "events": ["request.finished", "lease.*"]
+  },
+  "config_fields": [
+    {
+      "name": "events",
+      "label": "Events",
+      "type": "string_list",
+      "default": ["*"],
+      "description": "Event types to write: *, request.finished, lease.* or a single lease event type."
+    },
+    {
+      "name": "file_prefix",
+      "label": "File prefix",
+      "type": "string",
+      "default": "events",
+      "description": "Files are named <prefix>-YYYY-MM-DD.jsonl."
+    },
+    {
+      "name": "directory",
+      "label": "Directory",
+      "type": "string",
+      "description": "Output directory. Defaults to the plugin data directory."
+    },
+    {
+      "name": "retention_days",
+      "label": "Retention (days)",
+      "type": "integer",
+      "default": 7,
+      "description": "Delete files older than this many days. 0 keeps everything."
+    }
+  ],
+  "runtimes": {
+    "windows-amd64": {
+      "command": ["python", "main.py"]
+    },
+    "any": {
+      "command": ["python3", "main.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/plugin"
 	"github.com/Resinat/Resin/internal/proxy"
 	"github.com/Resinat/Resin/internal/requestlog"
 	"github.com/Resinat/Resin/internal/routing"
@@ -41,6 +42,7 @@ type resinApp struct {
 	requestlogSvc   *requestlog.Service
 	endpointManager *endpointRuntimeManager
 	transportPool   *proxy.OutboundTransportPool
+	plugins         *plugin.Manager
 }
 
 func run() error {
@@ -101,6 +103,7 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 		return nil, err
 	}
 	app.accountMatcher = buildAccountMatcher(engine)
+	app.plugins = app.newPluginManager(engine)
 
 	retryDL, err := app.initTopologyRuntime(engine)
 	if err != nil {
@@ -115,6 +118,9 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 		return nil, err
 	}
 	if err := app.buildNetworkServers(engine); err != nil {
+		return nil, err
+	}
+	if err := app.startPlugins(); err != nil {
 		return nil, err
 	}
 
@@ -171,6 +177,7 @@ func (a *resinApp) initTopologyRuntime(engine *state.StateEngine) (*netutil.Retr
 				engine.MarkLeaseDelete(e.PlatformID, e.Account)
 			}
 			a.onLeaseEventForMetrics(e)
+			a.plugins.OnLeaseEvent(e)
 		},
 	})
 	a.topoRuntime.leaseCleaner = routing.NewLeaseCleaner(a.topoRuntime.router)
@@ -382,6 +389,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		ProbeMgr:       a.topoRuntime.probeMgr,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
+		Plugins:        a.plugins,
 	}
 
 	apiSrv := api.NewServerWithAddress(
@@ -422,6 +430,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		OutboundTransport: outboundTransportCfg,
 		TransportPool:     a.transportPool,
 		ProxyBypassRules:  a.envCfg.ProxyBypassRules,
+		Hooks:             a.plugins,
 	})
 
 	reverseProxy := proxy.NewReverseProxy(proxy.ReverseProxyConfig{
@@ -436,6 +445,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		OutboundTransport: outboundTransportCfg,
 		TransportPool:     a.transportPool,
 		ProxyBypassRules:  a.envCfg.ProxyBypassRules,
+		Hooks:             a.plugins,
 	})
 	socks5Inbound := proxy.NewSocks5Inbound(proxy.Socks5InboundConfig{
 		ProxyToken:       a.envCfg.ProxyToken,
@@ -445,6 +455,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Events:           proxyEvents,
 		MetricsSink:      a.metricsManager,
 		ProxyBypassRules: a.envCfg.ProxyBypassRules,
+		Hooks:            a.plugins,
 	})
 
 	endpointManager := newEndpointRuntimeManager(
@@ -492,7 +503,8 @@ func (a *resinApp) buildProxyEvents() proxy.ConfigAwareEventEmitter {
 	// Composite emitter: requestlog handles EmitRequestLog, metricsManager handles EmitRequestFinished.
 	composite := compositeEmitter{logSvc: a.requestlogSvc, metricsMgr: a.metricsManager}
 	return proxy.ConfigAwareEventEmitter{
-		Base: composite,
+		Base:            composite,
+		RequestObserver: a.plugins.ObserveRequest,
 		RequestLogEnabled: func() bool {
 			return runtimeConfigSnapshot(a.runtimeCfg).RequestLogEnabled
 		},
@@ -574,6 +586,13 @@ func (a *resinApp) shutdown(ctx context.Context) {
 	log.Println("GeoIP service stopped")
 
 	// 2. Stop observability sinks (flush remaining data).
+	// Plugin event queues need an independent shutdown budget because the
+	// endpoint shutdown above may already have consumed the caller's context.
+	pluginCtx, pluginCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	a.plugins.Stop(pluginCtx)
+	pluginCancel()
+	log.Println("Plugins stopped")
+
 	a.requestlogSvc.Stop()
 	log.Println("Request log service stopped")
 	if err := a.requestlogRepo.Close(); err != nil {

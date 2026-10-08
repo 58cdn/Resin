@@ -4,7 +4,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +70,11 @@ type EnvConfig struct {
 	MetricLeasesRetentionSeconds      int
 	MetricLatencyBinWidthMS           int
 	MetricLatencyBinOverflowMS        int
+
+	// Plugins
+	PluginDir              string
+	ExternalPluginsEnabled bool
+	PluginMarketplaceURLs  []string
 }
 
 // DefaultNodeDNSUpstreams returns the default node DNS upstream URI list.
@@ -155,6 +162,14 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.MetricLeasesRetentionSeconds = envInt("RESIN_METRIC_LEASES_RETENTION_SECONDS", 18000, &errs)
 	cfg.MetricLatencyBinWidthMS = envInt("RESIN_METRIC_LATENCY_BIN_WIDTH_MS", 100, &errs)
 	cfg.MetricLatencyBinOverflowMS = envInt("RESIN_METRIC_LATENCY_BIN_OVERFLOW_MS", 3000, &errs)
+
+	// --- Plugins ---
+	cfg.PluginDir = strings.TrimSpace(envStr("RESIN_PLUGIN_DIR", ""))
+	if cfg.PluginDir == "" {
+		cfg.PluginDir = filepath.Join(cfg.StateDir, "plugins")
+	}
+	cfg.ExternalPluginsEnabled = envBool("RESIN_EXTERNAL_PLUGINS_ENABLED", false, &errs)
+	cfg.PluginMarketplaceURLs = envDelimitedStringSlice("RESIN_PLUGIN_MARKETPLACE_URLS", []string{})
 
 	// --- Validation ---
 	if cfg.AuthVersion == "" {
@@ -307,6 +322,13 @@ func LoadEnvConfig() (*EnvConfig, error) {
 		errs = append(errs, "RESIN_REQUEST_LOG_QUEUE_SIZE must be at least 2x RESIN_REQUEST_LOG_QUEUE_FLUSH_BATCH_SIZE")
 	}
 
+	for i, raw := range cfg.PluginMarketplaceURLs {
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Sprintf("RESIN_PLUGIN_MARKETPLACE_URLS[%d]: must be an absolute http(s) URL", i))
+		}
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config validation failed:\n  %s", strings.Join(errs, "\n  "))
 	}
@@ -334,6 +356,19 @@ func envInt(key string, defaultVal int, errs *[]string) int {
 		return defaultVal
 	}
 	return n
+}
+
+func envBool(key string, defaultVal bool, errs *[]string) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultVal
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s: invalid boolean %q", key, v))
+		return defaultVal
+	}
+	return b
 }
 
 func envDuration(key string, defaultVal time.Duration, errs *[]string) time.Duration {

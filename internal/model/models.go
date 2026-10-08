@@ -50,6 +50,20 @@ type Endpoint struct {
 	UpdatedAtNs          int64  `json:"updated_at_ns"`
 }
 
+// PluginSettings holds the persisted admin settings of one plugin. The
+// plugin package itself (manifest, executables) lives on disk or is compiled
+// in; only settings are stored in state.db.
+type PluginSettings struct {
+	ID          string `json:"id"`
+	Enabled     bool   `json:"enabled"`
+	Priority    int    `json:"priority"`
+	TimeoutMs   int    `json:"timeout_ms"`
+	FailClosed  bool   `json:"fail_closed"`
+	ConfigJSON  string `json:"config_json"`
+	CreatedAtNs int64  `json:"created_at_ns"`
+	UpdatedAtNs int64  `json:"updated_at_ns"`
+}
+
 // AccountHeaderRule defines header extraction rules for reverse proxy account matching.
 type AccountHeaderRule struct {
 	URLPrefix   string `json:"url_prefix"`

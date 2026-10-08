@@ -49,7 +49,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   return normalized;
 }
 
-export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
+export async function listNodes(filters: NodeListQuery, signal?: AbortSignal): Promise<PageResponse<NodeSummary>> {
   const query = new URLSearchParams({
     limit: String(filters.limit ?? 50),
     offset: String(filters.offset ?? 0),
@@ -85,7 +85,7 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
     query.set("enabled", String(filters.enabled));
   }
 
-  const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);
+  const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`, { signal });
   return {
     ...data,
     items: data.items.map(normalizeNode),

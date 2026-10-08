@@ -507,6 +507,78 @@ func scanEndpoint(scan endpointScanner) (model.Endpoint, error) {
 	return endpoint, nil
 }
 
+// --- plugins ---
+
+// UpsertPluginSettings inserts or replaces the settings row of one plugin.
+// created_at_ns is preserved for existing rows.
+func (r *StateRepo) UpsertPluginSettings(settings model.PluginSettings) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	configJSON := settings.ConfigJSON
+	if configJSON == "" {
+		configJSON = "{}"
+	}
+	_, err := r.db.Exec(`
+		INSERT INTO plugins (
+			id, enabled, priority, timeout_ms, fail_closed, config_json, created_at_ns, updated_at_ns
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			enabled = excluded.enabled,
+			priority = excluded.priority,
+			timeout_ms = excluded.timeout_ms,
+			fail_closed = excluded.fail_closed,
+			config_json = excluded.config_json,
+			updated_at_ns = excluded.updated_at_ns
+	`, settings.ID, settings.Enabled, settings.Priority, settings.TimeoutMs, settings.FailClosed,
+		configJSON, settings.CreatedAtNs, settings.UpdatedAtNs)
+	return err
+}
+
+// DeletePluginSettings removes the settings row of one plugin. Deleting a
+// missing row is not an error.
+func (r *StateRepo) DeletePluginSettings(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := r.db.Exec("DELETE FROM plugins WHERE id = ?", id)
+	return err
+}
+
+// ListPluginSettings returns all persisted plugin settings ordered by id.
+func (r *StateRepo) ListPluginSettings() ([]model.PluginSettings, error) {
+	rows, err := r.db.Query(`
+		SELECT id, enabled, priority, timeout_ms, fail_closed, config_json, created_at_ns, updated_at_ns
+		FROM plugins ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]model.PluginSettings, 0)
+	for rows.Next() {
+		var settings model.PluginSettings
+		var enabled, failClosed int
+		if err := rows.Scan(
+			&settings.ID,
+			&enabled,
+			&settings.Priority,
+			&settings.TimeoutMs,
+			&failClosed,
+			&settings.ConfigJSON,
+			&settings.CreatedAtNs,
+			&settings.UpdatedAtNs,
+		); err != nil {
+			return nil, err
+		}
+		settings.Enabled = enabled != 0
+		settings.FailClosed = failClosed != 0
+		result = append(result, settings)
+	}
+	return result, rows.Err()
+}
+
 // --- account_header_rules ---
 
 // EnsureAccountHeaderRule inserts a rule by url_prefix only when it does not
