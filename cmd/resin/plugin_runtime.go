@@ -29,7 +29,8 @@ func (a *resinApp) newPluginManager(engine *state.StateEngine) *plugin.Manager {
 			}
 			return ""
 		},
-		Builtins: builtin.All(),
+		Builtins:    builtin.All(),
+		BuiltinHost: builtinCapabilities{app: a, engine: engine},
 	})
 }
 

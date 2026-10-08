@@ -132,7 +132,7 @@ func TestPluginService_ListAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPlugins: %v", err)
 	}
-	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.WebhookID}
+	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.IPQualityID, builtin.WebhookID}
 	if len(infos) != len(wantIDs) {
 		t.Fatalf("ListPlugins returned %d items, want %d", len(infos), len(wantIDs))
 	}
@@ -372,7 +372,7 @@ func TestPluginService_Rescan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RescanPlugins: %v", err)
 	}
-	if len(infos) != 3 || infos[0].ID != builtin.AccessControlID || infos[2].ID != builtin.WebhookID {
+	if len(infos) != 4 || infos[0].ID != builtin.AccessControlID || infos[2].ID != builtin.IPQualityID || infos[3].ID != builtin.WebhookID {
 		ids := make([]string, len(infos))
 		for i := range infos {
 			ids[i] = infos[i].ID

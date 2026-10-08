@@ -2907,3 +2907,19 @@ func lookupRegion(dbPath string, ip netip.Addr) string {
 	return strings.ToLower(result.Country.ISOCode) // 返回 ISO 3166-1 alpha-2 小写代码，如 "cn", "us"
 }
 ```
+
+### IP quality builtin: cold-path foundation
+
+The opt-in `resin.ip-quality` builtin reuses the plugin Manager lifecycle. Trusted
+builtin constructors may receive narrow host capabilities; external plugin RPC is
+unchanged. A Manager-resolved service supports authenticated manual checks and
+cache-only reads. Egress consistency executes through a controlled node outbound
+with public-IP DNS pinning and no redirects; offline geographic information uses
+the existing GeoIP reader lifecycle. Neither operation reports probe results or
+changes circuit breakers, latency, or routing. Unknown fields remain unknown.
+
+Raw source results are cached by IP/source or node/source in `cache.db`, merged
+with in-flight deduplication, and flushed through the existing cache lifecycle.
+Node results are tied to the observed egress and removed on physical deletion.
+No background scheduler, proxy hot-path hook, or Platform quality filter is added.
+See `doc/ip-quality.zh-CN.md` for delivered and deferred scope.

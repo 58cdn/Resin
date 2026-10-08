@@ -55,12 +55,26 @@ var (
 	ErrMarketplaceDownload    = errors.New("marketplace download failed")
 )
 
+// BuiltinHost resolves narrow, host-owned capabilities for trusted builtins only.
+// It is never serialized or passed to external plugin processes.
+type BuiltinHost interface {
+	Capability(name string) (any, bool)
+}
+
+// BuiltinServiceProvider exposes a cold-path service while its plugin is running.
+// Services must reject work after their plugin closes.
+type BuiltinServiceProvider interface {
+	BuiltinService() any
+}
+
 // Builtin describes a plugin compiled into Resin.
 type Builtin struct {
 	Manifest pluginsdk.Manifest
 	// New returns a fresh, unconfigured instance. The instance may implement
 	// pluginsdk.RequestInspector, pluginsdk.EventHandler and io.Closer.
 	New func() pluginsdk.Plugin
+	// NewWithHost is optional; existing constructors remain compatible.
+	NewWithHost func(BuiltinHost) pluginsdk.Plugin
 }
 
 // SettingsStore persists per-plugin settings.
