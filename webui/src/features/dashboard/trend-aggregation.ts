@@ -9,6 +9,23 @@ export type TrendPoint = {
   bucketEnd?: number;
 };
 
+export function getThroughputAxisMax(points: TrendPoint[]): number {
+  let meanMax = 0;
+  let peakMax = 0;
+  for (const point of points) {
+    point.values.forEach((value, index) => {
+      // The separate live sample contributes to peaks, not the bucket means.
+      if (point.ranges) meanMax = Math.max(meanMax, value);
+      peakMax = Math.max(peakMax, point.ranges?.[index][1] ?? value);
+    });
+  }
+  if (peakMax <= 0) return 1;
+  const mean = meanMax || peakMax;
+  const target = 1.1 * mean * (peakMax / mean) ** 0.3;
+  const step = 10 ** Math.floor(Math.log10(target)) / 5;
+  return Math.max(1, Math.ceil(target / step) * step);
+}
+
 // The caller supplies the view's intended duration, never the changing span of
 // the samples received so far. Reserve room for a partial left bucket and the
 // separate latest sample. This also supports arbitrary, non-preset durations.

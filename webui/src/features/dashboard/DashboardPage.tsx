@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Gauge, Layers, Server, Shield, Waves } from "lucide-react";
-import { useId, useMemo, useState, type ComponentProps } from "react";
+import { useEffect, useId, useMemo, useState, type ComponentProps } from "react";
 import { Area, Bar, BarChart, CartesianGrid, ComposedChart, Curve, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge } from "../../components/ui/Badge";
 import { Card } from "../../components/ui/Card";
@@ -16,7 +16,7 @@ import {
   getDashboardGlobalSnapshotData,
 } from "./api";
 import type { DashboardGlobalData, LatencyBucket, TimeWindow } from "./types";
-import { aggregateTrendInput, getTrendBucketWidth, type TrendPoint } from "./trend-aggregation";
+import { aggregateTrendInput, getThroughputAxisMax, getTrendBucketWidth, type TrendPoint } from "./trend-aggregation";
 
 type RangeKey = "15m" | "1h" | "6h" | "24h";
 
@@ -418,6 +418,21 @@ function TrendChart({ labels, series, formatYAxisLabel, formatTooltipValue, aggr
   const data = hasExtrema
     ? aggregateTrendInput(labels, series, getTrendBucketWidth(aggregationWindowMs))
     : downsampleTrendInput(labels, series, MAX_TREND_POINTS, incompleteFrom);
+  const targetMax = hasExtrema ? getThroughputAxisMax(data) : undefined;
+  const [scale, setScale] = useState({ windowMs: aggregationWindowMs, max: targetMax ?? 1 });
+  const sameWindow = scale.windowMs === aggregationWindowMs;
+  const upperBound = targetMax === undefined ? undefined : Math.max(targetMax, sameWindow ? scale.max : targetMax);
+  useEffect(() => {
+    if (targetMax === undefined) return;
+    const expand = !sameWindow || targetMax > scale.max;
+    // Ignore small changes; after a sustained fall, shrink at most 10% every 5s.
+    if (!expand && targetMax >= scale.max * 0.8) return;
+    const timer = window.setTimeout(() => setScale({
+      windowMs: aggregationWindowMs,
+      max: expand ? targetMax : Math.max(targetMax, scale.max * 0.9),
+    }), expand ? 0 : 5000);
+    return () => window.clearTimeout(timer);
+  }, [aggregationWindowMs, sameWindow, scale.max, targetMax]);
   const boundary = incompleteFrom === undefined ? -1 : data.findIndex((point) => point.timestamp >= incompleteFrom);
   const yLabelFormatter = formatYAxisLabel ?? formatShortNumber;
   const valueCount = data.length;
@@ -467,7 +482,8 @@ function TrendChart({ labels, series, formatYAxisLabel, formatTooltipValue, aggr
               tickLine={false}
               tick={{ fill: "#657691", fontSize: 11, fontWeight: 600 }}
               tickFormatter={(value) => yLabelFormatter(Number(value))}
-              domain={[0, "auto"]}
+              domain={[0, upperBound ?? "auto"]}
+              allowDataOverflow={hasExtrema}
             />
             <Tooltip
               cursor={{ stroke: "rgba(15, 94, 216, 0.34)", strokeWidth: 1 }}
@@ -478,7 +494,7 @@ function TrendChart({ labels, series, formatYAxisLabel, formatTooltipValue, aggr
             {areaSeries.map((item, index) => (
               <Area
                 key={index}
-                type={hasExtrema ? "linear" : "monotone"}
+                type="monotone"
                 dataKey={`${hasExtrema ? "ranges" : "values"}.${index}`}
                 stroke="none"
                 fill={hasExtrema ? item.color : `url(#${gradientId})`}
@@ -493,7 +509,7 @@ function TrendChart({ labels, series, formatYAxisLabel, formatTooltipValue, aggr
             {series.map((item, index) => (
               <Line
                 key={index}
-                type={hasExtrema ? "linear" : "monotone"}
+                type="monotone"
                 dataKey={`values.${index}`}
                 shape={boundary < 0 ? undefined : <IncompleteBucketCurve boundary={boundary} />}
                 name={item.name}
