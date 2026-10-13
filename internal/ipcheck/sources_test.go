@@ -17,7 +17,7 @@ func TestEchoFixtures(t *testing.T) {
 			t.Fatalf("%q: %v %v", body, ip, err)
 		}
 	}
-	for _, body := range []string{"<html>Just a moment...</html>", `{"address":"8.8.8.8"}`, `{"ip":8}`, `{"ip":"8.8.8.8"} trailing`, "ip=8.8.8.8\nip=1.1.1.1", "127.0.0.1", "garbage", ""} {
+	for _, body := range []string{"<html>Just a moment...</html>", "<html>\nip=8.8.8.8\n</html>", `{"address":"8.8.8.8"}`, `{"ip":8}`, `{"ip":"8.8.8.8"} trailing`, `{"ip":"1.1.1.1","ip":"8.8.8.8"}`, `{"ip":"1.1.1.1","IP":"8.8.8.8"}`, "ip=8.8.8.8\nip=1.1.1.1", "ip=\nip=8.8.8.8", "127.0.0.1", "garbage", ""} {
 		if _, err := parseEchoIP([]byte(body)); err == nil {
 			t.Errorf("accepted %q", body)
 		}

@@ -229,27 +229,9 @@ func markOptionalFailures(result *SourceResult, message string) {
 // Parse only a complete key=value trace, never a substring in an HTML page or
 // an error payload. Missing, duplicate, malformed and unknown loc stay unknown.
 func traceCountry(body []byte) string {
-	var country string
-	found := false
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || key == "" || strings.ContainsAny(key, " <>\t\r") {
-			return ""
-		}
-		if key == "loc" {
-			if found {
-				return ""
-			}
-			found = true
-			country = strings.ToUpper(strings.TrimSpace(value))
-			if !countryCode(country) {
-				return ""
-			}
-		}
+	country := strings.ToUpper(traceValue(body, "loc"))
+	if !countryCode(country) {
+		return ""
 	}
 	return country
 }

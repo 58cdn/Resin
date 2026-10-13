@@ -18,6 +18,9 @@ func TestStrictConfig(t *testing.T) {
 		}
 	}
 	cases := []string{
+		`{"request_timeout_ms":100,"REQUEST_TIMEOUT_MS":200}`,
+		`{"enabled_sources":["db-ip"],"enabled_\u017fources":["egress-consistency"]}`,
+		`{"ai_region_targets":{"claude":{"url":"https://example.com/","URL":"https://other.example.com/"}}}`,
 		`{"unknown":1}`, `{"enabled_sources":null}`, `{"request_timeout_ms":100,"request_timeout_ms":200}`, `{"consistency_targets":["https://example.com/ip?site=a","https://example.com/ip?site=b"]}`, `{"background_enabled":true}`, `{"ip_result_ttl":"0s"}`, `{"node_result_ttl":"721h"}`,
 		`{"request_timeout_ms":99}`, `{"request_timeout_ms":60001}`, `{"max_concurrent_checks":0}`, `{"max_cache_entries":0}`,
 		`{"enabled_sources":["secret-key"]}`, `{"enabled_sources":["db-ip","db-ip"]}`, `{"source_priority":["missing"]}`,

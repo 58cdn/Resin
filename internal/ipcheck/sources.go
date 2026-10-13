@@ -2,7 +2,6 @@ package ipcheck
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -141,20 +140,12 @@ func parseEchoIP(body []byte) (netip.Addr, error) {
 		var value struct {
 			IP string `json:"ip"`
 		}
-		if err := json.Unmarshal(body, &value); err != nil {
+		if err := decodeObservationObject(body, &value); err != nil {
 			return netip.Addr{}, errBadEcho
 		}
 		candidate = value.IP
 	} else if strings.Contains(text, "\n") || strings.HasPrefix(text, "ip=") {
-		candidate = ""
-		for _, line := range strings.Split(text, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "ip=") {
-				if candidate != "" {
-					return netip.Addr{}, errBadEcho
-				}
-				candidate = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "ip="))
-			}
-		}
+		candidate = traceValue(body, "ip")
 	}
 	ip, err := netip.ParseAddr(candidate)
 	if err != nil || !IsPublicIP(ip) {

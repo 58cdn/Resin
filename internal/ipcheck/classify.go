@@ -1,7 +1,7 @@
 package ipcheck
 
 import (
-	"encoding/json"
+	"mime"
 	"net/http"
 	"strings"
 )
@@ -63,7 +63,8 @@ func ClassifyAIRegion(service string, status int, headers http.Header, body []by
 		return "risky"
 	}
 	// Availability requires structured, explicit provider evidence, not HTML.
-	if status >= 200 && status < 300 && strings.HasPrefix(strings.ToLower(headers.Get("Content-Type")), "application/json") {
+	mediaType, _, err := mime.ParseMediaType(headers.Get("Content-Type"))
+	if status >= 200 && status < 300 && err == nil && mediaType == "application/json" {
 		// The accepted JSON shape is deliberately local and provider-neutral; no
 		// undocumented live endpoint is assumed to have this contract.
 		if explicitAvailability(body, service) {
@@ -78,7 +79,7 @@ func explicitAvailability(body []byte, service string) bool {
 		Service   string `json:"service"`
 		Available *bool  `json:"available"`
 	}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := decodeObservationObject(body, &value); err != nil {
 		return false
 	}
 	return value.Service == service && value.Available != nil && *value.Available

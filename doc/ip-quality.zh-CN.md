@@ -16,6 +16,8 @@ TTL 限制为 1 秒至 30 天；请求超时 100–60000 ms；目标 1–8 个�
 
 可选 `max_concurrent_checks`（默认 8，1–64）、`max_cache_entries`（默认 4096，1–100000）、`source_priority` 控制冷路径资源与摘要优先级。
 
+配置和 JSON 观测对象拒绝重复字段，包括大小写或 Unicode 大小写别名。IP echo 的 trace 必须完整符合 `key=value` 格式，混杂 HTML、重复 `ip` 或矛盾 JSON 不会作为有效出口证据。AI 可用性要求合法的 `application/json` 媒体类型（可带参数），不接受 `application/jsonp` 或格式损坏的 Content-Type。
+
 ## API
 
 所有接口沿用管理员鉴权、请求体限制和错误格式。

@@ -227,6 +227,8 @@ func validateConfigObject(raw []byte) error {
 			return invalid("invalid JSON configuration")
 		}
 		key, ok := token.(string)
+		// encoding/json matches struct fields case-insensitively too.
+		key = observationFieldKey(key)
 		if !ok || seen[key] {
 			return invalid("duplicate configuration field")
 		}
