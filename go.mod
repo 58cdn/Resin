@@ -3,7 +3,7 @@ module github.com/Resinat/Resin
 go 1.25.5
 
 require (
-	github.com/anytls/sing-anytls v0.0.11
+	github.com/anytls/sing-anytls v0.0.13
 	github.com/ccojocar/zxcvbn-go v1.0.4
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
