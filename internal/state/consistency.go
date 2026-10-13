@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // RepairConsistency runs orphan-cleanup SQL on cache.db, cross-referencing
@@ -17,6 +18,7 @@ import (
 //  4. node_latency: remove entries whose node_hash is missing from nodes_static.
 //  5. leases: remove entries whose platform_id is missing from state.platforms
 //     OR whose node_hash is missing from nodes_static.
+//  6. ip_check_results: remove expired entries and orphaned node-owned results.
 func RepairConsistency(stateDBPath string, cacheDB *sql.DB) error {
 	// ATTACH state.db so we can cross-query.
 	attachSQL := fmt.Sprintf("ATTACH DATABASE %q AS state_db", stateDBPath)
@@ -61,5 +63,10 @@ func RepairConsistency(stateDBPath string, cacheDB *sql.DB) error {
 		}
 	}
 
+	if _, err := tx.Exec(`DELETE FROM ip_check_results
+		WHERE expires_at_ns <= ?
+		   OR (subject_kind = 'node_hash' AND subject NOT IN (SELECT hash FROM nodes_static))`, time.Now().UnixNano()); err != nil {
+		return fmt.Errorf("repair IP quality cache: %w", err)
+	}
 	return tx.Commit()
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/Resinat/Resin/internal/buildinfo"
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipcheck"
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
@@ -148,6 +149,13 @@ func (a *resinApp) initTopologyRuntime(engine *state.StateEngine) (*netutil.Retr
 		func(hash node.Hash) {
 			if a.transportPool != nil {
 				a.transportPool.Evict(hash)
+			}
+			if a.plugins != nil {
+				if svc, err := a.plugins.BuiltinService("resin.ip-quality"); err == nil {
+					if checks, ok := svc.(*ipcheck.Engine); ok {
+						checks.InvalidateNode(hash)
+					}
+				}
 			}
 		},
 	)

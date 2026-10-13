@@ -21,6 +21,7 @@ func All() []plugin.Builtin {
 		accessControlBuiltin(),
 		headerRewriteBuiltin(),
 		webhookBuiltin(),
+		ipQualityBuiltin(),
 	}
 }
 

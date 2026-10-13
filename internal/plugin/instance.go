@@ -37,13 +37,22 @@ type builtinInstance struct {
 	caps       atomic.Pointer[pluginsdk.Capabilities]
 }
 
-func startBuiltin(ctx context.Context, b *Builtin, params pluginsdk.RegisterParams) (inst *builtinInstance, err error) {
+func startBuiltin(ctx context.Context, b *Builtin, params pluginsdk.RegisterParams, hosts ...BuiltinHost) (inst *builtinInstance, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("plugin panic: %v", r)
 		}
 	}()
-	p := b.New()
+	var p pluginsdk.Plugin
+	if b.NewWithHost != nil {
+		var host BuiltinHost
+		if len(hosts) > 0 {
+			host = hosts[0]
+		}
+		p = b.NewWithHost(host)
+	} else if b.New != nil {
+		p = b.New()
+	}
 	if p == nil {
 		return nil, fmt.Errorf("builtin %s returned nil plugin", b.Manifest.ID)
 	}

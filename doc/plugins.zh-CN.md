@@ -335,3 +335,11 @@ func main() {
 | `POST` | `/api/v1/plugin-marketplace/{id}/actions/install` | 安装或升级插件市场中的插件 |
 
 未启用外部插件时，上传和插件市场端点返回 `409 CONFLICT`；此时包插件完全不会被加载，因此对它们的 `GET`/`PATCH`/`DELETE` 返回 `404`。
+
+## IP 质量内置插件（P1 基础）
+
+`resin.ip-quality` 默认禁用，只通过管理员手动 API 执行冷路径检测。
+复用现有 Manager 启停、配置与鉴权；可选 `NewWithHost` 构造器为首方 builtin
+注入受限宿主能力，旧 `New` 保持兼容，外部子进程不获得节点池、数据库或 transport。
+当前实现出口一致性、现有离线 GeoIP、缓存/去重和查询 API；AI 地区与跳盾适配器
+需要显式配置目标，默认关闭。ippure、专用 UI、后台与过滤尚未实现。详见 [IP 质量使用说明](ip-quality.zh-CN.md)。

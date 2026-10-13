@@ -3,6 +3,8 @@ package state
 import (
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/Resinat/Resin/internal/model"
 )
@@ -30,7 +32,8 @@ type CacheReaders struct {
 // StateEngine is the single write entry point for all persistence operations.
 // Strong-persist data (config, platforms, subscriptions, rules) goes through
 // transactional writes to state.db. Weak-persist data (nodes, leases) is
-// marked dirty and batch-flushed to cache.db.
+// marked dirty and batch-flushed to cache.db. IP quality source results use
+// a separate cold-path pending journal in the same flush transaction.
 type StateEngine struct {
 	*StateRepo
 	*CacheRepo
@@ -40,6 +43,12 @@ type StateEngine struct {
 	dirtyNodeLatency       *DirtySet[NodeLatencyDirtyKey]
 	dirtyLeases            *DirtySet[LeaseDirtyKey]
 	dirtySubscriptionNodes *DirtySet[SubscriptionNodeDirtyKey]
+
+	// IP quality operations are cold-path only. This lock serializes their
+	// pending journal with flushes; node/lease dirty marking never takes it.
+	ipCheckMu           sync.Mutex
+	ipCheckPending      map[ipCheckKey]*ipCheckRecord
+	ipCheckDeletedNodes map[string]struct{}
 }
 
 // newStateEngine creates a StateEngine with the given repos.
@@ -52,6 +61,8 @@ func newStateEngine(stateRepo *StateRepo, cacheRepo *CacheRepo) *StateEngine {
 		dirtyNodeLatency:       NewDirtySet[NodeLatencyDirtyKey](),
 		dirtyLeases:            NewDirtySet[LeaseDirtyKey](),
 		dirtySubscriptionNodes: NewDirtySet[SubscriptionNodeDirtyKey](),
+		ipCheckPending:         make(map[ipCheckKey]*ipCheckRecord),
+		ipCheckDeletedNodes:    make(map[string]struct{}),
 	}
 }
 
@@ -89,7 +100,8 @@ func (e *StateEngine) DirtyCount() int {
 		e.dirtyNodesDynamic.Len() +
 		e.dirtyNodeLatency.Len() +
 		e.dirtyLeases.Len() +
-		e.dirtySubscriptionNodes.Len()
+		e.dirtySubscriptionNodes.Len() +
+		e.ipCheckDirtyCount()
 }
 
 // classifyDirtySet splits a drained dirty-set snapshot into upsert values and
@@ -118,6 +130,10 @@ func classifyDirtySet[K comparable, V any](
 // and batch-writes to cache.db in a single transaction.
 // On failure, undrained entries are merged back.
 func (e *StateEngine) FlushDirtySets(readers CacheReaders) error {
+	// Keep the IP quality journal until commit succeeds. This also serializes
+	// concurrent flushes so older snapshots cannot overwrite newer results.
+	e.ipCheckMu.Lock()
+	defer e.ipCheckMu.Unlock()
 	// Drain all sets atomically (each set is individually atomic).
 	drainedStatic := e.dirtyNodesStatic.Drain()
 	drainedSubNodes := e.dirtySubscriptionNodes.Drain()
@@ -141,6 +157,8 @@ func (e *StateEngine) FlushDirtySets(readers CacheReaders) error {
 	upsertLatency, deleteLatency := classifyDirtySet(drainedLatency, readers.ReadNodeLatency)
 	upsertLeases, deleteLeases := classifyDirtySet(drainedLeases, readers.ReadLease)
 
+	ipChecks, deleteIPChecks, deleteIPCheckNodes := e.pendingIPCheckOps()
+
 	// Execute all writes in a single transaction.
 	if err := e.CacheRepo.FlushTx(FlushOps{
 		UpsertNodesStatic:       upsertStatic,
@@ -153,12 +171,20 @@ func (e *StateEngine) FlushDirtySets(readers CacheReaders) error {
 		DeleteNodeLatency:       deleteLatency,
 		UpsertLeases:            upsertLeases,
 		DeleteLeases:            deleteLeases,
+		upsertIPChecks:          ipChecks,
+		deleteIPChecks:          deleteIPChecks,
+		deleteIPCheckNodes:      deleteIPCheckNodes,
+		pruneIPChecksBefore:     time.Now().UnixNano(),
 	}); err != nil {
 		remerge()
 		return fmt.Errorf("flush: %w", err)
 	}
 
-	log.Printf("[state] flushed dirty sets: static=%d, sub_nodes=%d, dynamic=%d, latency=%d, leases=%d",
-		len(drainedStatic), len(drainedSubNodes), len(drainedDynamic), len(drainedLatency), len(drainedLeases))
+	clear(e.ipCheckPending)
+	clear(e.ipCheckDeletedNodes)
+
+	log.Printf("[state] flushed dirty sets: static=%d, sub_nodes=%d, dynamic=%d, latency=%d, leases=%d, ip_checks=%d",
+		len(drainedStatic), len(drainedSubNodes), len(drainedDynamic), len(drainedLatency), len(drainedLeases),
+		len(ipChecks)+len(deleteIPChecks)+len(deleteIPCheckNodes))
 	return nil
 }

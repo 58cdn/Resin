@@ -352,6 +352,10 @@ type FlushOps struct {
 	DeleteNodeLatency       []model.NodeLatencyKey
 	UpsertLeases            []model.Lease
 	DeleteLeases            []model.LeaseKey
+	upsertIPChecks          []ipCheckRecord
+	deleteIPChecks          []ipCheckKey
+	deleteIPCheckNodes      []string
+	pruneIPChecksBefore     int64
 }
 
 // FlushTx executes all upserts and deletes in a single transaction.
@@ -440,6 +444,9 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 		}
 	}
 
+	if err := flushIPCheckOps(tx, ops); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

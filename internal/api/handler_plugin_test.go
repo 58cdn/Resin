@@ -100,11 +100,11 @@ func TestPluginAPI_ListEnvelope(t *testing.T) {
 			t.Fatalf("list envelope missing %q: %v", key, body)
 		}
 	}
-	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.WebhookID}
+	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.IPQualityID, builtin.WebhookID}
 	if got := tpItemIDs(t, body); !reflect.DeepEqual(got, wantIDs) {
 		t.Fatalf("item ids = %v, want %v", got, wantIDs)
 	}
-	if body["total"] != float64(3) || body["limit"] != float64(defaultPageLimit) || body["offset"] != float64(0) {
+	if body["total"] != float64(4) || body["limit"] != float64(defaultPageLimit) || body["offset"] != float64(0) {
 		t.Fatalf("envelope = total %v limit %v offset %v", body["total"], body["limit"], body["offset"])
 	}
 
@@ -114,14 +114,14 @@ func TestPluginAPI_ListEnvelope(t *testing.T) {
 	if got := tpItemIDs(t, body); !reflect.DeepEqual(got, []string{builtin.HeaderRewriteID}) {
 		t.Fatalf("paged item ids = %v", got)
 	}
-	if body["total"] != float64(3) || body["limit"] != float64(1) || body["offset"] != float64(1) {
+	if body["total"] != float64(4) || body["limit"] != float64(1) || body["offset"] != float64(1) {
 		t.Fatalf("paged envelope = total %v limit %v offset %v", body["total"], body["limit"], body["offset"])
 	}
 
 	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/plugins?offset=10", nil, true)
 	tpExpectStatus(t, rec, http.StatusOK)
 	body = decodeJSONMap(t, rec)
-	if got := tpItemIDs(t, body); len(got) != 0 || body["total"] != float64(3) {
+	if got := tpItemIDs(t, body); len(got) != 0 || body["total"] != float64(4) {
 		t.Fatalf("offset past end = items %v total %v", got, body["total"])
 	}
 
@@ -288,10 +288,10 @@ func TestPluginAPI_Rescan(t *testing.T) {
 	if len(body) != 2 {
 		t.Fatalf("rescan body keys = %v, want exactly items and total", body)
 	}
-	if body["total"] != float64(3) {
-		t.Fatalf("total = %v, want 3", body["total"])
+	if body["total"] != float64(4) {
+		t.Fatalf("total = %v, want 4", body["total"])
 	}
-	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.WebhookID}
+	wantIDs := []string{builtin.AccessControlID, builtin.HeaderRewriteID, builtin.IPQualityID, builtin.WebhookID}
 	if got := tpItemIDs(t, body); !reflect.DeepEqual(got, wantIDs) {
 		t.Fatalf("rescan ids = %v, want %v", got, wantIDs)
 	}

@@ -43,6 +43,7 @@ type ManagerConfig struct {
 	// PlatformName resolves a platform ID for event payloads. Optional.
 	PlatformName func(id string) string
 	Builtins     []Builtin
+	BuiltinHost  BuiltinHost
 }
 
 // Manager owns every plugin: settings, lifecycle, the request hook chain
@@ -357,7 +358,7 @@ func (m *Manager) newInstance(ctx context.Context, e *entry, config json.RawMess
 	if e.builtin != nil {
 		ctx, cancel := context.WithTimeout(ctx, configureTimeout)
 		defer cancel()
-		return startBuiltin(ctx, e.builtin, params)
+		return startBuiltin(ctx, e.builtin, params, m.cfg.BuiltinHost)
 	}
 	if !m.cfg.ExternalEnabled {
 		return nil, ErrExternalDisabled
@@ -899,7 +900,7 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 		probe, err := startBuiltin(cctx, e.builtin, pluginsdk.RegisterParams{
 			SchemaVersion: pluginsdk.SchemaVersion, ResinVersion: m.cfg.ResinVersion,
 			PluginID: id, DataDir: m.dataDir(id), Config: newConfig,
-		})
+		}, m.cfg.BuiltinHost)
 		cancel()
 		if err != nil {
 			return Info{}, fmt.Errorf("%w: plugin rejected config: %v", ErrInvalidArgument, err)
@@ -1136,4 +1137,31 @@ func (m *Manager) loadPackage(id string) *entry {
 		e.setState(StatusError, e.loadErr)
 	}
 	return e
+}
+
+// BuiltinService returns a running builtin's cold-path service. Package plugins
+// cannot implement this capability. No manager lock is held while using it.
+func (m *Manager) BuiltinService(id string) (any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.entries[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if m.stopped || !e.settings.Enabled || e.inst == nil {
+		return nil, ErrConflict
+	}
+	b, ok := e.inst.(*builtinInstance)
+	if !ok {
+		return nil, ErrConflict
+	}
+	p, ok := b.p.(BuiltinServiceProvider)
+	if !ok {
+		return nil, ErrConflict
+	}
+	service := p.BuiltinService()
+	if service == nil {
+		return nil, ErrConflict
+	}
+	return service, nil
 }

@@ -70,7 +70,7 @@ func tpWithURL(t *testing.T, cfg json.RawMessage, url string) json.RawMessage {
 
 func TestBuiltin_AllManifestsValid(t *testing.T) {
 	all := All()
-	wantIDs := map[string]bool{AccessControlID: false, HeaderRewriteID: false, WebhookID: false}
+	wantIDs := map[string]bool{AccessControlID: false, HeaderRewriteID: false, WebhookID: false, IPQualityID: false}
 	if len(all) != len(wantIDs) {
 		t.Fatalf("All() returned %d builtins, want %d", len(all), len(wantIDs))
 	}
@@ -89,7 +89,7 @@ func TestBuiltin_AllManifestsValid(t *testing.T) {
 			if err := b.Manifest.Validate(); err != nil {
 				t.Fatalf("Manifest.Validate: %v", err)
 			}
-			if b.New == nil {
+			if b.New == nil && b.NewWithHost == nil {
 				t.Fatal("New is nil")
 			}
 
@@ -104,7 +104,12 @@ func TestBuiltin_AllManifestsValid(t *testing.T) {
 			if err := b.Manifest.ValidateConfig(cfg); err != nil {
 				t.Fatalf("ValidateConfig(default %s): %v", cfg, err)
 			}
-			p := b.New()
+			var p pluginsdk.Plugin
+			if b.NewWithHost != nil {
+				p = b.NewWithHost(qualityTestHost{})
+			} else {
+				p = b.New()
+			}
 			if err := p.Configure(context.Background(), cfg); err != nil {
 				t.Fatalf("Configure(default %s): %v", cfg, err)
 			}

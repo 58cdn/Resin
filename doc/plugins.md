@@ -399,3 +399,24 @@ All endpoints require the admin token.
 Uploads and marketplace endpoints return `409 CONFLICT` while external
 plugins are disabled; package plugins are then not loaded at all, so their
 `GET`/`PATCH`/`DELETE` return `404`.
+
+## IP quality builtin (P1 foundation)
+
+`resin.ip-quality` is disabled by default and performs only explicitly requested
+cold-path checks. It has no request hooks or background scheduler. The host passes
+narrow capabilities to trusted builtins through `NewWithHost`; existing `New`
+constructors remain supported, and external processes receive none of these
+capabilities. Running builtin services are resolved through the Manager, so
+configuration replacement and stop also invalidate their engines.
+
+The initial sources are node egress consistency and offline GeoIP using the
+existing database lifecycle. City/ASN fields are available only if present in the
+installed database; missing data remains unknown. Single-target consistency is
+unknown. Network targets are public HTTPS, DNS-pinned through the selected node,
+and redirects are rejected. No IP quality result changes node health or routing.
+See [the IP quality guide](ip-quality.zh-CN.md) for configuration, five authenticated
+API routes, DB-IP attribution, cache semantics, and explicit unimplemented scope.
+Optional Cloudflare challenge and AI region observation adapters require explicitly
+configured public HTTPS targets and remain disabled by default. Region membership
+alone is never treated as service availability. ippure, quality-specific UI,
+background checks, and platform filtering are not implemented.
