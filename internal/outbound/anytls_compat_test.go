@@ -7,7 +7,7 @@ import (
 )
 
 func TestAnyTLSClientMetadataDisabled(t *testing.T) {
-	if got := anytlsutil.Verison; got != "" {
+	if got := anytlsutil.Version; got != "" {
 		t.Fatalf("AnyTLS client metadata = %q, want empty", got)
 	}
 }
