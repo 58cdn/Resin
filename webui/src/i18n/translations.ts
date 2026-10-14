@@ -1,11 +1,13 @@
 import type { AppLocale } from "./locale";
 import { MANUAL_CHECK_EN } from "./manual-check-translations";
+import { BATCH_TASK_EN } from "./batch-task-translations";
 
 export const APP_TITLE_ZH = "Resin · 高性能粘性代理池";
 const APP_TITLE_EN = "Resin · Sticky Proxy Pool";
 
 const EXACT_ZH_TO_EN: Record<string, string> = {
   ...MANUAL_CHECK_EN,
+  ...BATCH_TASK_EN,
   "按 IP 查看质量缓存": "IP quality cache by address",
   "返回资源": "Back to resources",
   "仅读取已有按 IP 结果，不发起检测，也不包含经节点的可用性观测。": "Read saved by-IP results only. This does not run checks or include observations made through a node.",

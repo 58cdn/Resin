@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
 import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { DataTable } from "../../components/ui/DataTable";
@@ -738,6 +738,7 @@ export function NodesPage() {
           <h2>{t("节点池")}</h2>
           <p className="module-description">{t("快速定位异常节点并进行探测处理。")}</p>
         </div>
+          <Link className="ip-quality-settings" to="/resources/ip-quality-batch">{t("批量 IP 质量任务")}</Link>
       </header>
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

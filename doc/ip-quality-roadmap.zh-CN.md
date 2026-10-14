@@ -1,6 +1,6 @@
 # IP 质量能力路线图与验收记录
 
-验证快照：2026-10-14，PR12–15、PR17–19 已合并；本轮在 PR19 的实际 master 基线上增加有界批量任务 API。最终 CI 与合并状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
+验证快照：2026-10-14，PR12–15、PR17–20 已合并；本轮在 PR20 的实际 master 基线上增加显式批量任务页面。最终 CI 与合并状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
 
 本 fork 未启用 Issues，本轮只用仓库文档与 PR 跟踪，不修改仓库设置。P1 已通过 [PR1](https://github.com/58cdn/Resin/pull/1) 合并；PR2–11 已合并，不重复开发。P2–P4 尚未全部完成。
 
@@ -16,9 +16,10 @@
 | [PR17](https://github.com/58cdn/Resin/pull/17) | `fbe76a6d0c2a17772a874381dcafbe7c56630ced` | 10:41:09 UTC 已合并；列表缓存 UI，独立复审与 [自身 CI 38540128111](https://github.com/58cdn/Resin/actions/runs/38540128111) 通过；[实际 master CI 38551296373](https://github.com/58cdn/Resin/actions/runs/38551296373) 双平台通过 |
 | [PR18](https://github.com/58cdn/Resin/pull/18) | `d4e4dfee69a7d170480cb41601e8d8d138d0d516` | 11:10:17 UTC 已合并；[独立只读页面](ip-quality-byip-cache.zh-CN.md)，最终独立复审及 [自身 CI 38551995468](https://github.com/58cdn/Resin/actions/runs/38551995468) 双平台通过；[实际 master CI 38554697676](https://github.com/58cdn/Resin/actions/runs/38554697676) 双平台通过：20 项单测、36 组浏览器检查及 Go test/race/build/vet |
 | [PR19](https://github.com/58cdn/Resin/pull/19) | `7f27cbb00b5263b1450bfc2d63e0ae05be82c24e` | 11:37:21 UTC 已合并；[显式准备与检测](ip-quality-manual-check.zh-CN.md)；[最终自身 CI 38555153025](https://github.com/58cdn/Resin/actions/runs/38555153025) 双平台通过：28 项单测、54 组浏览器检查、Go test/race/build/vet；[实际 master CI 38557881711](https://github.com/58cdn/Resin/actions/runs/38557881711) 以运行结果为准 |
-| 本批量任务 API 切片 | 基础为实际 master `7f27cbb00b5263b1450bfc2d63e0ae05be82c24e` | [显式节点任务、进度与取消](ip-quality-batch-tasks.zh-CN.md)；只改后端与文档，保留现有三套浏览器检查；最终自身 CI 与合并结果记录于 PR 描述 |
+| [PR20](https://github.com/58cdn/Resin/pull/20) | `5529c29d93fbeb70d0854ae6e63bb64f452b7ad5` | 12:07:56 UTC 已合并；[显式节点任务、进度与取消](ip-quality-batch-tasks.zh-CN.md)；[自身 CI 38558713134](https://github.com/58cdn/Resin/actions/runs/38558713134) 与 [实际 master CI 38561534901](https://github.com/58cdn/Resin/actions/runs/38561534901) 双平台通过：28 项单测、54 组浏览器检查、Go test/race/build/vet |
+| 本批量任务页面切片 | 基础为实际 master `5529c29d93fbeb70d0854ae6e63bb64f452b7ad5` | [显式提交、恢复、进度与取消](ip-quality-batch-ui.zh-CN.md)，新增第四套浏览器检查；最终 CI 与合并结果记录于 PR 描述 |
 
-每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15→PR17→PR18→PR19 已按顺序合并；PR18 已修复组合后重复的共享翻译键。本切片在实际合并基线上增加批量任务，保留三套浏览器检查。用户已授权通过最终检查后自动合并；实际合并仍以远端结果为准。
+每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15→PR17→PR18→PR19→PR20 已按顺序合并；PR18 已修复组合后重复的共享翻译键。本页面切片保留原三套浏览器检查，并新增任务交互检查。用户已授权通过最终检查后自动合并；实际合并仍以远端结果为准。
 
 [PR13 合并后 CI 38529466438](https://github.com/58cdn/Resin/actions/runs/38529466438) 的 Windows 失败保留为失败记录：一秒桶在数据库恢复期间合法新增空桶，测试却查询全部时间并假定只有一行。延迟 overlay 已复现；PR14 只修改测试，按原桶时间严格验证并确定性检查新空桶，100 次目标测试、20 次 metrics 全包 race 及最终双平台 CI 通过。没有修改生产逻辑、放宽断言或跳过检查。
 
@@ -31,8 +32,8 @@
 | 3 | 节点列表紧凑徽标 | PR17 已合并 | 批量只读契约避免每行请求；进度/取消、过期/出口变更和 unknown |
 | 4a | by-IP 只读缓存页面 | PR18 已合并；仅复用已合并 GET | IPv4/IPv6/非法输入、404 模糊语义、来源失败、过期、取消/导航/晚到响应、键盘及移动布局；自身证据见 PR |
 | 4b | 显式单次检测控件 | [PR19 已合并](ip-quality-manual-check.zh-CN.md)，复用 P1 单次 API | 明确准备对象并选择来源后仅执行一次；取消/截止/晚到响应、节点快照变化、部分失败与缓存核对已有受控回归；真实验证另行确认节点与目标 |
-| 5a（本轮） | 批量检测 API、任务进度与取消 | [本切片已实现](ip-quality-batch-tasks.zh-CN.md)，显式 Hash 与 sources，4 活动任务、2 worker、32 总记录、30 分钟截止 | 容量、保留期内幂等、终态、取消/截止、配置替换/停止、缓存/force、共享检测隔离均由合成测试验证；最终 CI 与合并结果见 PR |
-| 5b | 批量任务界面 | 未实现；现有单次页不调用新任务接口 | 显式选择范围和来源、一次提交、进度/取消、保留期与丢失响应重试语义；不得把批量缓存读取当成检测入口 |
+| 5a | 批量检测 API、任务进度与取消 | [PR20 已合并](ip-quality-batch-tasks.zh-CN.md)，显式 Hash 与 sources，4 活动任务、2 worker、32 总记录、30 分钟截止 | 容量、保留期内幂等、终态、取消/截止、配置替换/停止、缓存/force、共享检测隔离及最终自身/实际 master 双平台 CI 通过 |
+| 5b（本轮） | 批量任务界面 | [本切片已实现](ip-quality-batch-ui.zh-CN.md)，明确 Hash/来源、固定请求、只读恢复、有限观察、独立取消 | 独立模型与浏览器回归覆盖丢失响应重试、归属与竞争、超时/限流/鉴权、历史结果语义；最终 CI 与合并结果见 PR |
 | 6 | 默认关闭的后台周期检测 | 未实现；`background_enabled:true` 继续被拒绝 | 显式启用、禁用/重配置/进程停止取消、重启恢复规则、避免重叠调度；与批量任务共用可靠生命周期 |
 | 7 | 每来源 QPS、日配额与熔断 | 未实现 | 明确配额时区/重置、429/超时退避、预算预留/归还、半开与失败类型；不能把当前批量读取限流当作 source 配额 |
 | 8 | Scamalytics / ipdata / Radar 等来源 | 未实现；不读取或创建密钥 | 核实官方接口、许可、字段、配额、凭据输入与脱敏；先做固定响应和传输 mock |

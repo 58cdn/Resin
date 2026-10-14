@@ -80,6 +80,7 @@ export function ManualCheckPage() {
       <p className="ip-manual-note">{t("停止、超时或失败不代表服务端未执行；已完成的缓存不回滚，共享检测可能继续。")}</p>
       {state.result ? <ManualResult result={state.result} now={now} cache={state.operation === "cache"} kind={kind} /> : null}
       <Link className="ip-quality-settings" to="/plugins">{t("查看插件配置")}</Link>
+      <Link className="ip-quality-settings" to="/resources/ip-quality-batch">{t("批量 IP 质量任务")}</Link>
     </Card>
   </section>;
 }
