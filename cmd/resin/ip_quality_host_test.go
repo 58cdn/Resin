@@ -77,7 +77,7 @@ func TestIPQualityTransportUsesPinnedNodeOutbound(t *testing.T) {
 	ob := &ipQualityTestOutbound{target: server.Listener.Addr().String()}
 	transport := newIPQualityTransport(ob, func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
-	})
+	}, nil)
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots}

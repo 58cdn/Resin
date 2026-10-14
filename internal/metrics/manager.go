@@ -46,8 +46,9 @@ type ManagerConfig struct {
 // It owns the Collector, BucketAggregator, RealtimeRing, and MetricsRepo.
 // Background tickers drive realtime sampling and bucket flushes.
 type Manager struct {
-	collector *Collector
-	bucket    *BucketAggregator
+	collector    *Collector
+	bucket       *BucketAggregator
+	ipCheckDials ipCheckDialTracker
 	// Separate realtime rings keep per-metric sampling intervals independent.
 	throughputRing  *RealtimeRing
 	connectionsRing *RealtimeRing
@@ -134,6 +135,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
 		collector:           NewCollector(cfg.LatencyBinMs, cfg.LatencyOverflowMs),
 		bucket:              NewBucketAggregator(bucketSec),
+		ipCheckDials:        ipCheckDialTracker{startedAt: time.Now().UTC()},
 		throughputRing:      NewRealtimeRing(cfg.ThroughputRealtimeCapacity),
 		connectionsRing:     NewRealtimeRing(cfg.ConnectionsRealtimeCapacity),
 		leasesRing:          NewRealtimeRing(cfg.LeasesRealtimeCapacity),

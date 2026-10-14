@@ -57,7 +57,8 @@ func (h ipQualityHost) GeoIPLookup(_ context.Context, ip netip.Addr) (ipcheck.Ge
 // DoViaNode accepts only GET public HTTPS, disables redirects, and pins DNS to
 // a validated public address before handing it to the outbound. TLS still uses
 // the original hostname. Remote DNS cannot rebind a validated hostname to LAN.
-// No health, latency, routing, or probe counters are touched.
+// Only dedicated IP-check dial counters are touched; health, latency, routing,
+// traffic and the existing egress/latency probe metrics are unchanged.
 func (h ipQualityHost) DoViaNode(ctx context.Context, hash node.Hash, req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil || req.Method != http.MethodGet {
 		return nil, errors.New("invalid IP check request")
@@ -76,7 +77,11 @@ func (h ipQualityHost) DoViaNode(ctx context.Context, hash node.Hash, req *http.
 	if ob == nil {
 		return nil, errors.New("node outbound unavailable")
 	}
-	transport := newIPQualityTransport(*ob, net.DefaultResolver.LookupNetIP)
+	var beginDial func() func(error)
+	if h.app.metricsManager != nil {
+		beginDial = h.app.metricsManager.BeginIPCheckDial
+	}
+	transport := newIPQualityTransport(*ob, net.DefaultResolver.LookupNetIP, beginDial)
 	client := newIPQualityClient(transport)
 	clean, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL.String(), nil)
 	if err != nil {
@@ -105,7 +110,7 @@ func resolvePublicTarget(ctx context.Context, addr string, lookup func(context.C
 	return net.JoinHostPort(ips[0].String(), port), nil
 }
 
-func newIPQualityTransport(ob adapter.Outbound, lookup func(context.Context, string, string) ([]netip.Addr, error)) *http.Transport {
+func newIPQualityTransport(ob adapter.Outbound, lookup func(context.Context, string, string) ([]netip.Addr, error), beginDial func() func(error)) *http.Transport {
 	return &http.Transport{
 		Proxy: nil, DisableKeepAlives: true, MaxResponseHeaderBytes: 32 << 10,
 		TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 30 * time.Second,
@@ -114,7 +119,17 @@ func newIPQualityTransport(ob adapter.Outbound, lookup func(context.Context, str
 			if err != nil {
 				return nil, err
 			}
-			return ob.DialContext(ctx, network, M.ParseSocksaddr(pinned))
+			// Count actual outbound calls, after DNS safety checks. A successful
+			// dial says nothing about TLS, HTTP status, or observation quality.
+			var finish func(error)
+			if beginDial != nil {
+				finish = beginDial()
+			}
+			conn, err := ob.DialContext(ctx, network, M.ParseSocksaddr(pinned))
+			if finish != nil {
+				finish(err)
+			}
+			return conn, err
 		},
 	}
 }
