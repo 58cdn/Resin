@@ -1,0 +1,68 @@
+name: PR12 final candidate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr12-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go and WebUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=1
+      CGO_ENABLED: "1"
+      NODE_OPTIONS: --max-old-space-size=1536
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: bca2881fe718bf6cdad3ff5cff1bc34ae2bb20bc
+          fetch-depth: 2
+      - name: Verify exact PR12 candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "bca2881fe718bf6cdad3ff5cff1bc34ae2bb20bc"
+          test "$(git rev-parse HEAD^1)" = "4a04becce1793c64958e568aac145a2f48ab0b49"
+          test "$(git rev-parse HEAD^2)" = "d6f8bc6e6cc8eb7505ba4c86a45ef138ae4b20fd"
+          test "$(git rev-parse 'HEAD^{tree}')" = "393a9eec19075b1b1b4a210c956c58ab834791a9"
+          git show -s --format='commit=%H%nparents=%P%ntree=%T' HEAD
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build WebUI for Go embed
+        working-directory: webui
+        run: |
+          npm ci --no-audit --no-fund --maxsockets=2
+          npm run build
+      - name: Show toolchain
+        run: |
+          go version
+          go env GOOS GOARCH CC CGO_ENABLED
+          gcc --version
+      - name: Test
+        run: go test ./... -count=1 -timeout=180s
+      - name: Race
+        run: go test -race ./... -count=1 -timeout=180s
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
