@@ -4,6 +4,7 @@ import { LoginPage } from "../features/auth/LoginPage";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { EndpointsPage } from "../features/endpoints/EndpointsPage";
 import { GeoIPPage } from "../features/geoip/GeoIPPage";
+import { IPQualityCachePage } from "../features/ipQuality/IPQualityCachePage";
 import { NodesPage } from "../features/nodes/NodesPage";
 import { RequireAuth } from "../features/auth/RequireAuth";
 import { PlatformDetailPage } from "../features/platforms/PlatformDetailPage";
@@ -41,6 +42,7 @@ export function AppRoutes() {
         <Route path="/rules" element={<RulesPage />} />
         <Route path="/request-logs" element={<RequestLogsPage />} />
         <Route path="/resources" element={<GeoIPPage />} />
+        <Route path="/resources/ip-quality" element={<IPQualityCachePage />} />
         <Route path="/plugins" element={<PluginsPage />} />
         <Route path="/system-config" element={<SystemConfigPage />} />
       </Route>

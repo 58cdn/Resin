@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowDownToLine, Database, RefreshCw, Search, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -89,6 +90,7 @@ export function GeoIPPage() {
         <div>
           <h2>{t("资源")}</h2>
           <p className="module-description">{t("查询 IP 所在地区，并维护 GeoIP 数据库。")}</p>
+          <Link className="ip-quality-settings" to="/resources/ip-quality">{t("按 IP 查看质量缓存")}</Link>
         </div>
       </header>
 
