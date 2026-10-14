@@ -158,6 +158,9 @@ func NewServerWithAddress(
 
 	// Metrics endpoints.
 	if metricsManager != nil {
+		// Process-local actual IP-check node dials, separate from probe history.
+		authed.Handle("GET /api/v1/metrics/ip-checks/dials", HandleIPCheckDials(metricsManager))
+
 		// Realtime (ring buffer).
 		authed.Handle("GET /api/v1/metrics/realtime/throughput", HandleRealtimeThroughput(metricsManager))
 		authed.Handle("GET /api/v1/metrics/realtime/connections", HandleRealtimeConnections(metricsManager))
