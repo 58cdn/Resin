@@ -164,6 +164,7 @@ test("metadata limits count UTF-8 bytes and unknown raw fields are not retained"
 });
 
 test("batch errors preserve uncertainty, limited idempotency and the distinction between observing and canceling", () => {
+  for (const status of [404, 409, 503, undefined]) assert.equal(batchErrorKey(status, "prepare"), "无法读取来源，请检查插件配置后手动重试。");
   assert.match(batchErrorKey(undefined, "submit"), /未能确认.*重试可能再次执行/);
   assert.match(batchErrorKey(503, "submit"), /保留原提交/);
   assert.match(batchErrorKey(404, "poll"), /过期.*淘汰.*不代表从未执行/);

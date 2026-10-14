@@ -199,11 +199,11 @@ export function isTerminal(task: BatchTask): boolean {
 export function batchErrorKey(status?: number, operation: "prepare" | "submit" | "poll" | "cancel" = "poll"): string {
   if (status === 400) return "任务范围、来源或标识无效，请检查后重试。";
   if (status === 401 || status === 403) return "无权访问任务，请检查管理员登录状态。";
+  if (status === 429) return "任务请求过于频繁，请稍后手动重试。";
+  if (operation === "prepare") return "无法读取来源，请检查插件配置后手动重试。";
   if (status === 404) return "任务记录不可获取：可能已过期、被淘汰或属于旧配置；不代表从未执行。";
   if (status === 409) return "请求标识已用于其他范围，请保留原提交或明确创建新任务。";
-  if (status === 429) return "任务请求过于频繁，请稍后手动重试。";
   if (operation === "cancel") return "取消请求未获确认；任务可能仍在运行，请查询原任务。";
   if (operation === "submit") return status === 503 ? "插件不可用、任务容量已满或请求超时；请保留原提交，重试可能再次执行。" : "未能确认任务是否接受；请保留原提交，重试可能再次执行。";
-  if (operation === "prepare") return "无法读取来源，请检查插件配置后手动重试。";
   return status === 503 ? "插件不可用或任务查询超时；已暂停查询，服务端任务状态未知。" : "任务查询失败；已暂停查询，服务端任务可能继续运行。";
 }
