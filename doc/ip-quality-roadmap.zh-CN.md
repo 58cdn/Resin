@@ -1,6 +1,6 @@
 # IP 质量能力路线图与验收记录
 
-验证快照：2026-10-14 08:15 UTC，PR15 最终复验开始前。最新合并与 CI 状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
+验证快照：2026-10-14，PR12–15 已合并且最终 master CI 已通过；本列表切片保持独立草稿。最新 HEAD 与 CI 状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
 
 本 fork 未启用 Issues，本轮只用仓库文档与 PR 跟踪，不修改仓库设置。P1 已通过 [PR1](https://github.com/58cdn/Resin/pull/1) 合并；PR2–11 已合并，不重复开发。P2–P4 尚未全部完成。
 
@@ -12,19 +12,22 @@
 | [PR12](https://github.com/58cdn/Resin/pull/12) | `c0ea4155847dd3b6e61125d41d7aae79e6dfbb07` | 07:16:01 UTC 已合并；Windows reset 修复与 lease 测试时钟修正；[临时辅助 PR 的准确候选 CI 38525264468](https://github.com/58cdn/Resin/actions/runs/38525264468) 双平台通过，辅助 PR16 已关闭且未合并 |
 | [PR13](https://github.com/58cdn/Resin/pull/13) | `4bb9188eb966d873174f54f5368be20d4603a4d8` | 07:36:48 UTC 已合并；[最终自身 CI 38527442777](https://github.com/58cdn/Resin/actions/runs/38527442777) 双平台通过；合并后 Windows 暴露 metrics 测试跨秒缺陷，修复见 PR14 |
 | [PR14](https://github.com/58cdn/Resin/pull/14) | `590ab517cbb346f769ebe4563685ad4afc67b7ed` | 08:15:01 UTC 已合并；节点详情面板与 metrics 测试修复；[最终自身 CI 38531553063](https://github.com/58cdn/Resin/actions/runs/38531553063) 双平台 test/race/build/vet、4 项前端测试及构建通过；另有 14 项本地 mock 浏览器检查 |
-| [PR15](https://github.com/58cdn/Resin/pull/15) | 基础为实际 master `590ab517cbb346f769ebe4563685ad4afc67b7ed` | [批量缓存 API](ip-quality-batch-cache.zh-CN.md)；同步 PR14 并保留两部分文档，最终 HEAD 与新 CI 记录在本 PR 描述中，本快照不预称通过或合并 |
+| [PR15](https://github.com/58cdn/Resin/pull/15) | `def0caddb9bc6db90b88504a3e4f7274adf31595` | 08:39:50 UTC 已合并；[批量缓存 API](ip-quality-batch-cache.zh-CN.md)；[最终自身 CI 38534451747](https://github.com/58cdn/Resin/actions/runs/38534451747) 及 [实际 master CI 38536711116](https://github.com/58cdn/Resin/actions/runs/38536711116) 双平台全量检查通过 |
+| 当前列表缓存切片 | 基础为实际 master `def0caddb9bc6db90b88504a3e4f7274adf31595` | [手动列表读取与徽标](ip-quality-list-cache.zh-CN.md)，独立草稿；复用已合并面板与 API，新增实现的最终 HEAD、自身 CI 和浏览器证据见本 PR 描述 |
 
-每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14 已按顺序完成；PR15 以实际 master 重新验证后才可合并。新列表 UI 已在独立工作区保存，待这四项收口后另建草稿；其合并尚未获准。
+每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15 已按顺序完成；本列表 UI 已同步实际 master，须取得自身最终检查并在 PR 描述记录结果，不能借用前置 PR 的结果。它不在上述四个 PR 的合并授权内，保持草稿。
 
 [PR13 合并后 CI 38529466438](https://github.com/58cdn/Resin/actions/runs/38529466438) 的 Windows 失败保留为失败记录：一秒桶在数据库恢复期间合法新增空桶，测试却查询全部时间并假定只有一行。延迟 overlay 已复现；PR14 只修改测试，按原桶时间严格验证并确定性检查新空桶，100 次目标测试、20 次 metrics 全包 race 及最终双平台 CI 通过。没有修改生产逻辑、放宽断言或跳过检查。
+
+修复后的 [PR14 master CI 38533779961](https://github.com/58cdn/Resin/actions/runs/38533779961) 于 08:32:06 UTC 成功；PR15 实际 master CI 于 08:53:24 UTC 成功。两平台各 21 包 test、21 包 race、4 项前端测试及全部构建/vet 通过。合并和 CI 不代表部署或真实节点验证。
 
 ## 切片顺序与剩余验收
 
 | 顺序 | 范围 | 当前状态 | 进入下一步的依据 |
 | --- | --- | --- | --- |
 | 1 | 节点详情缓存、来源错误与状态、中英文 | PR14 已合并 | 最终自身双平台 CI 和受控浏览器检查通过 |
-| 2（本轮） | 节点缓存批量读取 API | PR15 最终复验中；50 项上限、规范化去重、限流、取消、逐项失败、原始来源和 unknown | fake host 验证不发检测请求；边界、生命周期和双平台测试；最终结果见 PR15 |
-| 3 | 节点列表紧凑徽标 | 独立工作区已保存，尚未发布或合并 | 使用批量缓存契约避免每行请求；处理过期、取消、出口变更，保持 unknown；单独草稿与自身 CI |
+| 2 | 节点缓存批量读取 API | PR15 已合并；50 项上限、规范化去重、限流、取消、逐项失败、原始来源和 unknown | fake host 验证不发检测请求；最终自身与 master 双平台测试通过 |
+| 3（本轮） | 节点列表紧凑徽标 | 当前草稿已实现：点击读取本页、进度与取消、部分失败、过期与出口变更失效、详情入口 | 只读批量契约，每批最多 50、串行间隔 600ms；最终 mock 浏览器与自身双平台 CI 见本 PR |
 | 4 | by-IP 缓存页面、显式单次检测控件 | 未实现；P1 已有单次 API | 清楚区分读缓存和发起检测；展示目标/请求范围及逐来源错误；真实验证另行确认节点与目标 |
 | 5 | 批量检测 API、任务进度与取消 | 未实现；本轮只读 API 不等同于批量检测 | 有界队列和并发、重复任务合并、每项终态、停止后不继续调度、缓存/force 规则；先用合成数据验收 |
 | 6 | 默认关闭的后台周期检测 | 未实现；`background_enabled:true` 继续被拒绝 | 显式启用、禁用/重配置/进程停止取消、重启恢复规则、避免重叠调度；与批量任务共用可靠生命周期 |

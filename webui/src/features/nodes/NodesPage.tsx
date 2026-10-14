@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
 import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -22,6 +22,8 @@ import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import { SubscriptionFilterSelect } from "./SubscriptionFilterSelect";
 import { NodeIPQualityPanel } from "./NodeIPQualityPanel";
+import { NodeIPQualityCacheBadge, NodeIPQualityListToolbar } from "./NodeIPQualityList";
+import { useNodeIPQualityBatch } from "./use-node-ip-quality-batch";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
@@ -203,6 +205,18 @@ function firstTag(node: { display_tag?: string; tags: { tag: string }[] }): stri
   return node.tags[0].tag;
 }
 
+const QualityListContext = createContext<{ batch: ReturnType<typeof useNodeIPQualityBatch>; open: (hash: string) => void } | null>(null);
+
+// Keep the cell component identity stable across page renders. An inline cell
+// function remounts its button and loses keyboard focus when the drawer opens.
+function QualityListCell({ row }: { row: { original: NodeSummary } }) {
+  const context = useContext(QualityListContext);
+  if (!context) return null;
+  const { batch, open } = context;
+  const node = row.original;
+  return <NodeIPQualityCacheBadge entry={batch.entries[node.node_hash]} now={batch.now} busy={batch.phase === "reading"} name={firstTag(node)} onOpen={() => open(node.node_hash)} />;
+}
+
 function hasReferenceLatency(node: NodeSummary): node is NodeSummary & { reference_latency_ms: number } {
   return typeof node.reference_latency_ms === "number";
 }
@@ -288,6 +302,7 @@ export function NodesPage() {
   const [pageSize, setPageSize] = useState<number>(200);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
   const [pendingEgressHashes, setPendingEgressHashes] = useState<Set<string>>(() => new Set());
   const [pendingLatencyHashes, setPendingLatencyHashes] = useState<Set<string>>(() => new Set());
   const { toasts, showToast, dismissToast } = useToast();
@@ -353,6 +368,11 @@ export function NodesPage() {
     unique_healthy_egress_ips: 0,
   };
   const nodes = nodesPage.items;
+  const qualityBatch = useNodeIPQualityBatch(
+    nodes,
+    JSON.stringify([draftFilters, activeFilters, sortBy, sortOrder, page, pageSize]),
+    !nodesQuery.isPlaceholderData && !nodesQuery.isError && !nodesQuery.isPending
+  );
 
   const totalPages = Math.max(1, Math.ceil(nodesPage.total / pageSize));
 
@@ -380,15 +400,36 @@ export function NodesPage() {
       return;
     }
 
+    const previousFocus = document.activeElement;
+    const drawer = drawerRef.current;
+    const focusable = () => Array.from(drawer?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]') ?? []).filter((element) => element.getClientRects().length > 0);
+    (focusable()[0] ?? drawer)?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
-        return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDrawerOpen(false);
+      } else if (event.key === "Tab") {
+        const controls = focusable();
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (!first) {
+          event.preventDefault();
+          drawer?.focus();
+        } else if (event.shiftKey && (document.activeElement === first || !drawer?.contains(document.activeElement))) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !drawer?.contains(document.activeElement))) {
+          event.preventDefault();
+          first.focus();
+        }
       }
-      setDrawerOpen(false);
     };
 
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
   }, [drawerVisible]);
 
   const openDrawer = (hash: string) => {
@@ -586,6 +627,11 @@ export function NodesPage() {
           </div>
         );
       },
+    }),
+    col.display({
+      id: "ip_quality_cache",
+      header: t("IP 质量缓存"),
+      cell: QualityListCell,
     }),
     col.display({
       id: "reference_latency_ms",
@@ -821,6 +867,7 @@ export function NodesPage() {
       </Card>
 
       <Card className="nodes-table-card platform-cards-container subscriptions-table-card">
+        <NodeIPQualityListToolbar batch={qualityBatch} />
         {nodesQuery.isLoading ? <p className="muted">{t("正在加载节点数据...")}</p> : null}
 
         {nodesQuery.isError ? (
@@ -838,12 +885,14 @@ export function NodesPage() {
         ) : null}
 
         {nodes.length ? (
+          <QualityListContext.Provider value={{ batch: qualityBatch, open: openDrawer }}>
           <DataTable
             data={nodes}
             columns={nodeColumns}
             onRowClick={(node) => openDrawer(node.node_hash)}
             getRowId={(node) => node.node_hash}
           />
+          </QualityListContext.Provider>
         ) : null}
 
         <OffsetPagination
@@ -860,6 +909,8 @@ export function NodesPage() {
       {drawerVisible && detailNode ? (
         <div
           className="drawer-overlay"
+          ref={drawerRef}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-label={t("节点详情 {{name}}", { name: firstTag(detailNode) })}
