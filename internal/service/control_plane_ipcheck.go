@@ -116,6 +116,12 @@ func ipQualityServiceError(err error) error {
 		return invalidArg(validation.Error())
 	}
 	switch {
+	case errors.Is(err, ipcheck.ErrBatchNotFound):
+		return notFound("batch task not found in the current plugin generation")
+	case errors.Is(err, ipcheck.ErrBatchConflict):
+		return conflict("request_id was already used with a different batch")
+	case errors.Is(err, ipcheck.ErrBatchCapacity):
+		return &ServiceError{Code: "SERVICE_UNAVAILABLE", Message: "IP quality batch task capacity reached"}
 	case errors.Is(err, ipcheck.ErrNodeNotFound):
 		return notFound("node not found")
 	case errors.Is(err, ipcheck.ErrNotChecked):

@@ -61,6 +61,7 @@ type Engine struct {
 	closedDone     chan struct{}
 	fingerprint    string
 	nextGeneration uint64
+	batches        *batchTasks
 }
 
 func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
@@ -87,6 +88,7 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	for _, name := range cfg.EnabledSources {
 		e.enabled[name] = true
 	}
+	e.batches = newBatchTasks(e)
 	return e, nil
 }
 
@@ -619,6 +621,7 @@ func (e *Engine) Close() error {
 	e.closed = true
 	e.cancel()
 	e.mu.Unlock()
+	e.batches.close()
 	e.workers.Wait()
 	e.mu.Lock()
 	e.cache = map[cacheKey]*list.Element{}

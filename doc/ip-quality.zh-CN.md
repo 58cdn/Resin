@@ -1,6 +1,6 @@
 # IP 质量检测（手动 API 与缓存查看）
 
-`resin.ip-quality` 是由现有 Plugin Manager 管理的首方 builtin。默认禁用；启用本身不发起检测，后台检测不支持。只有管理员显式调用检测 API 才执行所选数据源。结果仅供参考，不代表服务可用性或风控保证。
+`resin.ip-quality` 是由现有 Plugin Manager 管理的首方 builtin。默认禁用；启用本身不发起检测，周期检测不支持。只有管理员显式调用检测 API 才执行所选数据源。结果仅供参考，不代表服务可用性或风控保证。
 
 ## 启用与配置
 
@@ -28,6 +28,7 @@ TTL 限制为 1 秒至 30 天；请求超时 100–60000 ms；目标 1–8 个�
 - `POST /api/v1/ip-checks/lookup`：`{"ip":"8.8.8.8","sources":["db-ip"],"force":false}`。只允许 by-IP 数据源。
 - `GET /api/v1/ip-checks/sources`：查看启用状态、类型及不可用原因。
 - `POST /api/v1/ip-checks/cache/nodes`：批量只读节点缓存，`{"node_hashes":["32位节点hash"]}`；最多 50 项，规范化去重、限流、取消及逐项失败。详见[批量缓存 API 契约](ip-quality-batch-cache.zh-CN.md)。不会触发检测。
+- `POST /api/v1/ip-checks/actions/check-batch`：显式提交有界节点检测任务；`GET /api/v1/ip-checks/tasks/{id}` 查询进度，`POST /api/v1/ip-checks/tasks/{id}/actions/cancel` 请求取消。须显式提供 request_id、node_hashes 和非空 sources；详见[批量任务契约](ip-quality-batch-tasks.zh-CN.md)。
 
 非法 IP/请求返回 400，节点不存在或未检测返回 404，节点无公网出口返回 409，插件未运行返回 503。数值/布尔未知为 null，分类未知为 `unknown`；source unavailable 不伪造成功。返回的原始 source 结果是事实来源，summary 是派生视图。
 
@@ -97,12 +98,12 @@ by-IP 缓存按规范化出口 IP/source 共享；via-node 按 node hash/source 
 
 ## 明确未实现
 
-已实现 P1 插件框架与可独立验证的数据源、P2 节点详情只读面板，以及批量只读缓存接口。[路线图与 PR 依赖](ip-quality-roadmap.zh-CN.md)列出验证记录和完整剩余切片；以下仍有明确边界：
+已实现 P1 插件框架与可独立验证的数据源、P2 缓存界面与接口、显式单次检测控件；本切片增加有界节点批量任务 API。[路线图与 PR 依赖](ip-quality-roadmap.zh-CN.md)列出验证记录和完整剩余切片；以下仍有明确边界：
 
 - ippure：仅报告 unavailable；接口与许可尚未确认，不发请求。
 - Cloudflare challenge、AI region：显式配置端点适配与 fixtures 已实现；不内置未经确认的第三方端点或官方地区名单，也不能检测账户级可用性。
 - 不读取 Scamalytics/ipdata/Radar 密钥，也不调用其 API；后续需另行实现和测试。配置中不接受密钥字段。
-- P2：PR14 节点详情面板、PR15 批量缓存 API、PR17 列表徽标和 PR18 by-IP 只读页已合并；本切片实现显式单次检测控件。批量检测/后台任务、配额/源熔断、风险评分、需密钥情报源及 IP 检测专用指标仍未实现。批量读缓存不等于批量检测。
+- P2：PR14 节点详情面板、PR15 批量缓存 API、PR17 列表徽标、PR18 by-IP 只读页和 PR19 显式单次检测控件已合并。本切片实现批量任务 API、进度与取消；批量 UI、后台周期调度、配额/源熔断、风险评分、需密钥情报源及 IP 检测专用指标仍未实现。批量读缓存不等于批量检测，显式批量任务不等于周期调度。
 - P3：Platform 过滤与节点列表质量过滤。
 - P4：DNS leak、自建权威 DNS、外部 capability 协议调研。
 - 不引入浏览器自动化或未确认条款的 HTML 抓取。
