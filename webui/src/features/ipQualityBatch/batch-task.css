@@ -1,0 +1,23 @@
+.ip-batch-page { display: grid; gap: 20px; }
+.ip-batch-page > .ip-manual-back { justify-self: start; margin: 0; }
+.ip-batch-label { display: block; margin-bottom: 8px; font-weight: 600; }
+.ip-batch-page form > .btn { margin-top: 12px; }
+.ip-batch-page textarea { resize: vertical; min-height: 128px; font-family: monospace; }
+.ip-batch-page :is(code, p, li) { overflow-wrap: anywhere; }
+.ip-batch-page :is(.input, .textarea) { width: 100%; min-width: 0; }
+.ip-batch-page textarea:focus-visible { outline: 3px solid var(--primary-strong); outline-offset: 3px; }
+.ip-batch-scope summary { min-height: 44px; cursor: pointer; font-weight: 600; }
+.ip-batch-scope ul { max-height: 220px; overflow: auto; padding-left: 24px; }
+.ip-batch-submit { justify-self: start; }
+.ip-batch-task-controls { display: grid; gap: 12px; }
+.ip-batch-task-controls label { margin: 0; }
+.ip-batch-restore h3 { margin: 0; }
+.ip-batch-result-heading { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+.ip-batch-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-block: 1px solid var(--border); padding: 16px 0; gap: 12px; }
+.ip-batch-progress dt { color: var(--text-muted); font-size: 13px; }
+.ip-batch-progress dd { margin: 6px 0 0; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ip-batch-items { list-style: none; padding: 0; margin: 0; }
+.ip-batch-items summary { flex-wrap: wrap; gap: 8px; }
+.ip-batch-source { border-top: 1px solid var(--border); padding: 12px 0; }
+.ip-batch-source > span { margin-left: 12px; }
+@media (max-width: 640px) { .ip-batch-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ip-batch-submit { width: 100%; } }
