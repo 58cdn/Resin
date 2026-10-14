@@ -21,4 +21,4 @@
 
 ## 后续边界
 
-本切片不包含 by-IP 页面、手动检测控件、批量检测任务、后台周期检测、来源配额或凭据来源。后台检测仍默认关闭且 `background_enabled:true` 不受支持；风险级别仍为 unknown。评分依据、P3 过滤和 P4 DNS/capability 研究各自留在[公开路线图](ip-quality-roadmap.zh-CN.md)，不由缓存 UI 隐式启用。没有修改生产服务、创建发行、部署、读取/创建密钥或执行真实节点探测。
+本列表缓存切片不包含 by-IP 页面、手动检测控件、批量检测任务、后台周期检测、来源配额或凭据来源。后续[显式节点定期检测](ip-quality-periodic.zh-CN.md)仍默认关闭，不由缓存 UI 隐式启用；风险级别仍为 unknown。评分依据、P3 过滤和 P4 DNS/capability 研究各自留在[公开路线图](ip-quality-roadmap.zh-CN.md)。没有修改生产服务、创建发行、部署、读取/创建密钥或执行真实节点探测。

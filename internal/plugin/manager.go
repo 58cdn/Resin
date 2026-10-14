@@ -248,6 +248,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		}(e)
 	}
 	wg.Wait()
+	for _, e := range m.entries {
+		m.activateBuiltin(e)
+	}
 	m.rebuildChain()
 	return nil
 }
@@ -294,7 +297,8 @@ func (m *Manager) applyStoredSettings(e *entry) {
 	e.settings.ConfigJSON = string(e.config)
 }
 
-// startEntry starts an instance for e with config. Caller holds m.mu.
+// startEntry starts an instance for e with config. Caller holds m.mu and must
+// separately activate autonomous builtin work once the settings are committed.
 func (m *Manager) startEntry(ctx context.Context, e *entry, config json.RawMessage) error {
 	if e.loadErr != "" {
 		e.setState(StatusError, e.loadErr)
@@ -318,6 +322,20 @@ func (m *Manager) startEntry(ctx context.Context, e *entry, config json.RawMessa
 	m.syncEventQueue(ctx, e)
 	e.setStateIf(token, StatusRunning, "")
 	return nil
+}
+
+// activateBuiltin starts autonomous work only for an enabled builtin's committed
+// configuration. Caller holds m.mu; this must never be called during preparation
+// of an uncommitted configuration or for a disabled validation instance.
+func (m *Manager) activateBuiltin(e *entry) {
+	if m.stopped || !e.settings.Enabled || e.builtin == nil {
+		return
+	}
+	if inst, ok := e.inst.(*builtinInstance); ok {
+		if activator, ok := inst.p.(BuiltinActivator); ok {
+			activator.Activate()
+		}
+	}
 }
 
 // syncEventQueue starts or stops e's event worker to match the event
@@ -922,6 +940,8 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 				if cerr := m.configure(changeCtx, e, prevConfig); cerr != nil {
 					m.cfg.Logf("[plugin] %s: restoring the previous config failed: %v; restarting it", id, cerr)
 					m.restartEntry(ctx, e, prevConfig)
+				} else {
+					m.activateBuiltin(e)
 				}
 			}
 			return Info{}, fmt.Errorf("persist plugin settings: %w", err)
@@ -939,6 +959,7 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (Info, error)
 	// A builtin's event subscription can depend on its config.
 	m.syncEventQueue(changeCtx, e)
 	m.rebuildChain()
+	m.activateBuiltin(e)
 	return m.info(e), nil
 }
 
@@ -964,7 +985,10 @@ func configRejected(e *entry, err error) bool {
 func (m *Manager) restartEntry(ctx context.Context, e *entry, config json.RawMessage) {
 	ctx = context.WithoutCancel(ctx)
 	m.stopEntry(ctx, e)
-	_ = m.startEntry(ctx, e, config) // failures are logged and shown in the status
+	// Startup failures are logged and shown in the status.
+	if err := m.startEntry(ctx, e, config); err == nil {
+		m.activateBuiltin(e)
+	}
 	m.rebuildChain()
 }
 
@@ -1061,7 +1085,9 @@ func (m *Manager) Rescan(ctx context.Context) ([]Info, error) {
 	}
 	for _, e := range m.entries {
 		if e.settings.Enabled && e.inst == nil {
-			_ = m.startEntry(changeCtx, e, e.config)
+			if err := m.startEntry(changeCtx, e, e.config); err == nil {
+				m.activateBuiltin(e)
+			}
 		}
 	}
 	m.rebuildChain()
