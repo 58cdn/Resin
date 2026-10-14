@@ -19,9 +19,9 @@ func ipQualityBuiltin() plugin.Builtin {
 	return plugin.Builtin{
 		Manifest: pluginsdk.Manifest{
 			SchemaVersion: pluginsdk.SchemaVersion, ID: IPQualityID, Name: "IP Quality", Version: "1.0.0",
-			Description: "Manual, cold-path IP quality checks. Offline GeoIP and opt-in node egress consistency; no background checks.", Author: "Resin", License: "MIT",
+			Description: "Cold-path IP quality checks. Offline GeoIP, opt-in node observations and default-off explicit-node periodic checks.", Author: "Resin", License: "MIT",
 			ConfigFields: []pluginsdk.ConfigField{
-				{Name: "cloudflare_challenge_urls", Label: "Optional Cloudflare challenge URLs", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Explicit public HTTPS targets; no defaults, only used when cloudflare-challenge is enabled and manually requested."},
+				{Name: "cloudflare_challenge_urls", Label: "Optional Cloudflare challenge URLs", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Explicit public HTTPS targets; no defaults, only used when cloudflare-challenge is enabled and explicitly requested or scheduled."},
 				{Name: "ai_region_targets", Label: "Optional AI region observation targets", Type: pluginsdk.FieldJSON, Default: raw(`{}`), Description: "Map of claude/chatgpt to {url,supported_countries?}; no default endpoints or country lists. Supported region alone does not prove availability."},
 				{Name: "max_concurrent_checks", Label: "Concurrent checks", Type: pluginsdk.FieldInteger, Default: raw(`8`)},
 				{Name: "max_cache_entries", Label: "Memory cache entries", Type: pluginsdk.FieldInteger, Default: raw(`4096`)},
@@ -31,7 +31,10 @@ func ipQualityBuiltin() plugin.Builtin {
 				{Name: "node_result_ttl", Label: "Node result TTL", Type: pluginsdk.FieldString, Default: raw(`"6h"`)},
 				{Name: "request_timeout_ms", Label: "Request timeout (ms)", Type: pluginsdk.FieldInteger, Default: raw(`10000`)},
 				{Name: "consistency_targets", Label: "HTTPS consistency targets", Type: pluginsdk.FieldJSON, Default: raw(`["https://cloudflare.com/cdn-cgi/trace"]`)},
-				{Name: "background_enabled", Label: "Background checks (unsupported in P1)", Type: pluginsdk.FieldBoolean, Default: raw(`false`)},
+				{Name: "background_enabled", Label: "Periodic checks", Type: pluginsdk.FieldBoolean, Default: raw(`false`), Description: "Opt-in only. Requires explicit nodes, sources and interval. Network sources expose node egress IPs to configured targets."},
+				{Name: "background_nodes", Label: "Periodic node hashes", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Up to 50 explicit unique node hashes; no node-pool or filter expansion."},
+				{Name: "background_sources", Label: "Periodic sources", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Explicit available and enabled sources. Cached results are reused until expiry."},
+				{Name: "background_interval", Label: "Periodic interval", Type: pluginsdk.FieldString, Default: raw(`""`), Description: "5m to 24h; first run waits a full interval, then waits again after each bounded cycle."},
 			},
 		},
 		NewWithHost: func(host plugin.BuiltinHost) pluginsdk.Plugin { return &ipQuality{host: host} },
@@ -77,6 +80,11 @@ func (p *ipQuality) BuiltinService() any {
 		return e
 	}
 	return nil
+}
+func (p *ipQuality) Activate() {
+	if e := p.engine.Load(); e != nil {
+		e.ActivateBackground()
+	}
 }
 func (p *ipQuality) Close() error {
 	if old := p.engine.Swap(nil); old != nil {

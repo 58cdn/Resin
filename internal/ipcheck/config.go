@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Resinat/Resin/internal/node"
 )
 
 const (
@@ -26,6 +28,9 @@ type Config struct {
 	CloudflareChallengeURLs []string                        `json:"cloudflare_challenge_urls"`
 	AIRegionTargets         map[string]AIRegionTargetConfig `json:"ai_region_targets"`
 	BackgroundEnabled       bool                            `json:"background_enabled"`
+	BackgroundNodes         []string                        `json:"background_nodes,omitempty"`
+	BackgroundSources       []string                        `json:"background_sources,omitempty"`
+	BackgroundInterval      string                          `json:"background_interval,omitempty"`
 	MaxConcurrentChecks     int                             `json:"max_concurrent_checks"`
 	MaxCacheEntries         int                             `json:"max_cache_entries"`
 	SourcePriority          []string                        `json:"source_priority"`
@@ -77,9 +82,6 @@ func (cfg Config) Validate() error {
 	if cfg.RequestTimeoutMS < 100 || cfg.RequestTimeoutMS > 60000 {
 		return invalid("request_timeout_ms must be between 100 and 60000")
 	}
-	if cfg.BackgroundEnabled {
-		return invalid("background_enabled is not supported in P1")
-	}
 	if cfg.MaxConcurrentChecks < 1 || cfg.MaxConcurrentChecks > 64 {
 		return invalid("max_concurrent_checks must be between 1 and 64")
 	}
@@ -120,6 +122,52 @@ func (cfg Config) Validate() error {
 	}
 	if err := validateOptionalTargets(cfg.CloudflareChallengeURLs, cfg.AIRegionTargets); err != nil {
 		return err
+	}
+	return cfg.validateBackground()
+}
+
+func (cfg Config) validateBackground() error {
+	if cfg.BackgroundEnabled && (len(cfg.BackgroundNodes) == 0 || len(cfg.BackgroundSources) == 0 || cfg.BackgroundInterval == "") {
+		return invalid("background checks require explicit nodes, sources and interval")
+	}
+	if len(cfg.BackgroundNodes) > MaxBackgroundNodes {
+		return invalid("background_nodes must contain at most 50 node hashes")
+	}
+	seenNodes := map[node.Hash]bool{}
+	for _, value := range cfg.BackgroundNodes {
+		hash, err := node.ParseHex(value)
+		if err != nil || seenNodes[hash] {
+			return invalid("background_nodes must contain unique 32-character hex node hashes")
+		}
+		seenNodes[hash] = true
+	}
+	if cfg.BackgroundInterval != "" {
+		interval, err := time.ParseDuration(cfg.BackgroundInterval)
+		if err != nil || interval < 5*time.Minute || interval > 24*time.Hour {
+			return invalid("background_interval must be between 5m and 24h")
+		}
+	}
+	if len(cfg.BackgroundSources) > len(sourceCatalog) {
+		return invalid("too many background sources")
+	}
+	seenSources := map[string]bool{}
+	for _, name := range cfg.BackgroundSources {
+		status, known := sourceCatalog[name]
+		available := status.Available
+		switch name {
+		case "cloudflare-challenge":
+			available = len(cfg.CloudflareChallengeURLs) > 0
+		case "ai-region":
+			available = len(cfg.AIRegionTargets) > 0
+		}
+		enabled := false
+		for _, value := range cfg.EnabledSources {
+			enabled = enabled || value == name
+		}
+		if !known || !available || !enabled || seenSources[name] {
+			return invalid("background_sources must contain unique available enabled sources")
+		}
+		seenSources[name] = true
 	}
 	return nil
 }

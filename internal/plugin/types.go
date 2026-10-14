@@ -67,6 +67,22 @@ type BuiltinServiceProvider interface {
 	BuiltinService() any
 }
 
+// BuiltinActivator is an optional lifecycle boundary for trusted builtins that
+// perform autonomous work. Configure must only prepare the next configuration;
+// a successful reconfiguration must quiesce the previous autonomous work, while
+// a rejected configuration must leave the previous configuration unchanged.
+// The Manager calls Activate only for committed, enabled settings, including
+// restoration of a previous configuration after a persistence failure.
+//
+// Activate must be non-blocking, idempotent and unable to fail. It runs with the
+// Manager lock held, so neither it nor work awaited during Configure or Close may
+// call back into the Manager. Autonomous workers must use their own lifetime,
+// not the temporary Configure context. Close must stop and join them and prevent
+// later activation. This interface is not part of the external plugin protocol.
+type BuiltinActivator interface {
+	Activate()
+}
+
 // Builtin describes a plugin compiled into Resin.
 type Builtin struct {
 	Manifest pluginsdk.Manifest

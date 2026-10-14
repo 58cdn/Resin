@@ -41,27 +41,29 @@ type flight struct {
 
 // Engine is a bounded, cold-path engine with per-subject/source singleflight.
 // Requests share work independently of any one caller's lifetime; work is
-// canceled when the last waiter leaves or the plugin stops. No scheduler runs.
+// canceled when the last waiter leaves or the plugin stops. Optional background
+// checks start only after explicit activation of committed configuration.
 type Engine struct {
-	host           Host
-	store          Store
-	config         Config
-	sources        map[string]Source
-	enabled        map[string]bool
-	ctx            context.Context
-	cancel         context.CancelFunc
-	sem            chan struct{}
-	mu             sync.Mutex
-	closed         bool
-	flights        map[cacheKey]*flight
-	nodes          map[node.Hash]nodeState
-	cache          map[cacheKey]*list.Element
-	lru            *list.List
-	workers        sync.WaitGroup
-	closedDone     chan struct{}
-	fingerprint    string
-	nextGeneration uint64
-	batches        *batchTasks
+	host              Host
+	store             Store
+	config            Config
+	sources           map[string]Source
+	enabled           map[string]bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	sem               chan struct{}
+	mu                sync.Mutex
+	closed            bool
+	flights           map[cacheKey]*flight
+	nodes             map[node.Hash]nodeState
+	cache             map[cacheKey]*list.Element
+	lru               *list.List
+	workers           sync.WaitGroup
+	closedDone        chan struct{}
+	fingerprint       string
+	nextGeneration    uint64
+	batches           *batchTasks
+	backgroundStarted bool
 }
 
 func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
@@ -76,9 +78,18 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	cfg.CloudflareChallengeURLs = append([]string(nil), cfg.CloudflareChallengeURLs...)
 	cfg.AIRegionTargets = cloneAIRegionTargets(cfg.AIRegionTargets)
 	cfg.SourcePriority = append([]string(nil), cfg.SourcePriority...)
+	cfg.BackgroundNodes = append([]string(nil), cfg.BackgroundNodes...)
+	cfg.BackgroundSources = append([]string(nil), cfg.BackgroundSources...)
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{host: host, store: store, config: cfg, ctx: ctx, cancel: cancel, sem: make(chan struct{}, cfg.MaxConcurrentChecks), sources: map[string]Source{}, enabled: map[string]bool{}, flights: map[cacheKey]*flight{}, nodes: map[node.Hash]nodeState{}, cache: map[cacheKey]*list.Element{}, lru: list.New(), closedDone: make(chan struct{})}
-	encoded, _ := json.Marshal(cfg)
+	// Scheduling policy does not change observation semantics. Preserve the
+	// legacy fingerprint (including background_enabled:false) and cached facts.
+	observationConfig := cfg
+	observationConfig.BackgroundEnabled = false
+	observationConfig.BackgroundNodes = nil
+	observationConfig.BackgroundSources = nil
+	observationConfig.BackgroundInterval = ""
+	encoded, _ := json.Marshal(observationConfig)
 	digest := sha256.Sum256(encoded)
 	e.fingerprint = hex.EncodeToString(digest[:])
 	e.sources["egress-consistency"] = &consistencySource{targets: cfg.ConsistencyTargets}
