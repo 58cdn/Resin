@@ -3,9 +3,82 @@ package proxy
 import (
 	"io"
 	"net"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestPumpPreparedTunnelReader_ResetBoundaries(t *testing.T) {
+	readReset := wrapTunnelCopyError(&net.OpError{Op: "read", Err: syscall.ECONNRESET})
+	writeReset := wrapTunnelCopyError(&net.OpError{Op: "write", Err: syscall.ECONNRESET})
+	for _, tc := range []struct {
+		name        string
+		response    string
+		clientErr   error
+		upstreamErr error
+		writeErr    error
+		wantStage   string
+	}{
+		{name: "client-read-after-response", response: "reply", clientErr: readReset},
+		{name: "client-read-without-response", clientErr: readReset, wantStage: "connect_client_to_upstream_copy"},
+		{name: "upstream-write-after-response", response: "reply", writeErr: writeReset, wantStage: "connect_client_to_upstream_copy"},
+		{name: "upstream-read-after-response", response: "reply", upstreamErr: readReset, wantStage: "connect_upstream_to_client_copy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &resetBoundaryConn{}
+			upstream := &resetBoundaryConn{
+				reader:   io.MultiReader(strings.NewReader(tc.response), terminalErrorReader{tc.upstreamErr}),
+				writeErr: tc.writeErr,
+			}
+			clientReader := io.MultiReader(strings.NewReader("request"), terminalErrorReader{tc.clientErr})
+			result := pumpPreparedTunnelReader(client, clientReader, &preparedTunnel{upstreamConn: upstream}, tunnelPumpOptions{})
+			if wantOK := tc.wantStage == ""; result.netOK != wantOK {
+				t.Fatalf("netOK = %v, want %v (stage=%q err=%v)", result.netOK, wantOK, result.upstreamStage, result.upstreamErr)
+			}
+			if result.upstreamStage != tc.wantStage {
+				t.Errorf("stage = %q, want %q", result.upstreamStage, tc.wantStage)
+			}
+			if (result.proxyErr == nil) != result.netOK {
+				t.Errorf("proxyErr = %v, netOK = %v", result.proxyErr, result.netOK)
+			}
+			if result.ingressBytes != int64(len(tc.response)) {
+				t.Errorf("ingressBytes = %d, want %d", result.ingressBytes, len(tc.response))
+			}
+		})
+	}
+}
+
+// Finite readers and independent half-closes make classification tests insensitive
+// to goroutine order. The TCP test below separately exercises real reset/close I/O.
+type resetBoundaryConn struct {
+	stubHalfCloseConn
+	reader   io.Reader
+	writeErr error
+}
+
+func (c *resetBoundaryConn) Read(p []byte) (int, error) {
+	if c.reader == nil {
+		return 0, io.EOF
+	}
+	return c.reader.Read(p)
+}
+
+func (c *resetBoundaryConn) Write(p []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	return len(p), nil
+}
+
+type terminalErrorReader struct{ err error }
+
+func (r terminalErrorReader) Read([]byte) (int, error) {
+	if r.err == nil {
+		return 0, io.EOF
+	}
+	return 0, r.err
+}
 
 func TestPumpPreparedTunnelReader_FallsBackToFullCloseWhenHalfCloseUnavailable(t *testing.T) {
 	clientBase, clientPeer := net.Pipe()
