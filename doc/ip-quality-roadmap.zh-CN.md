@@ -1,6 +1,6 @@
 # IP 质量能力路线图与验收记录
 
-验证快照：2026-10-14，PR12–15、PR17–22 已合并；本轮在 PR22 的实际 master 基线上增加默认关闭的显式节点定期检测。最终 CI 与合并状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
+验证快照：2026-10-14，PR12–15、PR17–23 已合并；本轮在 PR23 的实际 master 基线上增加尚未接入生产的来源 HTTP 尝试控制器及离线测试。最终 CI 与合并状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
 
 本 fork 未启用 Issues，本轮只用仓库文档与 PR 跟踪，不修改仓库设置。P1 已通过 [PR1](https://github.com/58cdn/Resin/pull/1) 合并；PR2–11 已合并，不重复开发。P2–P4 尚未全部完成。
 
@@ -19,7 +19,8 @@
 | [PR20](https://github.com/58cdn/Resin/pull/20) | `5529c29d93fbeb70d0854ae6e63bb64f452b7ad5` | 12:07:56 UTC 已合并；[显式节点任务、进度与取消](ip-quality-batch-tasks.zh-CN.md)；[自身 CI 38558713134](https://github.com/58cdn/Resin/actions/runs/38558713134) 与 [实际 master CI 38561534901](https://github.com/58cdn/Resin/actions/runs/38561534901) 双平台通过：28 项单测、54 组浏览器检查、Go test/race/build/vet |
 | [PR21](https://github.com/58cdn/Resin/pull/21) | `1b9e6f85a89f45548996ddd211f27b737b1634b1` | 13:13:23 UTC 已合并；[显式批量任务页面](ip-quality-batch-ui.zh-CN.md)，[自身 CI 38566762746](https://github.com/58cdn/Resin/actions/runs/38566762746) 双平台通过：41 项单测、72 组浏览器检查、Go test/race/build/vet；[实际 master CI 38570000586](https://github.com/58cdn/Resin/actions/runs/38570000586) 以运行结果为准 |
 | [PR22](https://github.com/58cdn/Resin/pull/22) | `025feb37e73656751e2a15abc4d43437345bbc4b` | [实际节点拨号累计与只读 API](ip-quality-dial-metrics.zh-CN.md)；独立双向复审、受控 mock/回环测试及自身 CI38571118063 双平台通过；实际 master CI38574290771 结果记录于 PR 描述 |
-| 本定期检测切片 | 基础为实际 master `025feb37e73656751e2a15abc4d43437345bbc4b` | [默认关闭的显式节点定期检测](ip-quality-periodic.zh-CN.md)，最终 CI 与合并记录见 PR 描述 |
+| [PR23](https://github.com/58cdn/Resin/pull/23) | `6cc744eac4df36af208118336d957f1a2def7360` | [默认关闭的显式节点定期检测](ip-quality-periodic.zh-CN.md)，最终自身 CI38577302553 双平台通过；实际 master CI38580944481 结果见 PR 描述 |
+| 本请求控制核心切片 | 基础为实际 master `6cc744eac4df36af208118336d957f1a2def7360` | [HTTP 尝试控制器及离线验证](ip-quality-request-guards-core.zh-CN.md)；没有生产调用或插件配置入口，不能视为已生效的来源控制 |
 
 每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15→PR17→PR18→PR19→PR20→PR21 已按顺序合并；PR18 已修复组合后重复的共享翻译键。现有四套浏览器检查保持不变。用户已授权通过最终检查后自动合并；实际合并仍以远端结果为准。
 
@@ -36,9 +37,10 @@
 | 4b | 显式单次检测控件 | [PR19 已合并](ip-quality-manual-check.zh-CN.md)，复用 P1 单次 API | 明确准备对象并选择来源后仅执行一次；取消/截止/晚到响应、节点快照变化、部分失败与缓存核对已有受控回归；真实验证另行确认节点与目标 |
 | 5a | 批量检测 API、任务进度与取消 | [PR20 已合并](ip-quality-batch-tasks.zh-CN.md)，显式 Hash 与 sources，4 活动任务、2 worker、32 总记录、30 分钟截止 | 容量、保留期内幂等、终态、取消/截止、配置替换/停止、缓存/force、共享检测隔离及最终自身/实际 master 双平台 CI 通过 |
 | 5b | 批量任务界面 | [PR21 已合并](ip-quality-batch-ui.zh-CN.md)，明确 Hash/来源、固定请求、只读恢复、有限观察、独立取消 | 独立模型与浏览器回归覆盖丢失响应重试、归属与竞争、超时/限流/鉴权、历史结果语义；最终自身 CI 双平台通过 |
-| 6a | 默认关闭的显式节点定期检测 | [本切片实现](ip-quality-periodic.zh-CN.md)；显式 1–50 Hash、可用来源与间隔，成功保存后启动 | 首次完整等待、固定延迟、周期预算与公平游标、停用/重配/停止取消、缓存与共享请求，受控离线验证 |
+| 6a | 默认关闭的显式节点定期检测 | [PR23 已合并](ip-quality-periodic.zh-CN.md)；显式 1–50 Hash、可用来源与间隔，成功保存后启动 | 首次完整等待、固定延迟、周期预算与公平游标、停用/重配/停止取消、缓存与共享请求；最终自身双平台 CI 通过 |
 | 6b | 全节点池周期扫描 | 未实现；当前不会扩展节点池、平台、订阅或过滤结果 | 另行定义有界枚举、快照、调度公平性与节点资格变化，不能把 6a 当作全池扫描完成 |
-| 7 | 每来源 QPS、日配额与熔断 | 未实现 | 明确配额时区/重置、429/超时退避、预算预留/归还、半开与失败类型；不能把当前批量读取限流当作 source 配额 |
+| 7a | 每来源 HTTP 尝试控制器 | [本切片实现独立核心](ip-quality-request-guards-core.zh-CN.md)，未接入生产；默认关闭的令牌桶、UTC 日软预算和熔断状态机 | 固定来源、配置不重置消耗、时间回拨、原子准入、一次完成、半开唯一及旧代完成隔离，确定性离线验证 |
+| 7b | 来源请求控制运行接入 | 未实现；当前检测请求仍未经过 7a 控制器 | 进程寿命与保存后提交、类型化 HTTP/Host 结果、局部抑制不污染缓存、单次/批量及严格前端解析同步；真实供应商计费硬额度另需持久化和账号规则 |
 | 8 | Scamalytics / ipdata / Radar 等来源 | 未实现；不读取或创建密钥 | 核实官方接口、许可、字段、配额、凭据输入与脱敏；先做固定响应和传输 mock |
 | 9 | 可公开审查、配置和测试的风险评分 | 未实现；`risk_level` 保持 unknown | 先有可追溯的规则、阈值依据及版本；保留原始来源、冲突和缺失，不能把缺数据、0 或无标记判成低风险 |
 | 9b（本轮） | IP 检测专用指标 | [实际节点拨号累计与只读 API 已实现](ip-quality-dial-metrics.zh-CN.md)；结果/任务/来源指标和历史序列仍待独立定义 | DNS 安全校验之后按实际 outbound 调用计数；并发一致快照、一次完成、取消/deadline 分类及旧指标隔离。拨号成功不代表 HTTP 或质量成功，读取与缓存命中不新增拨号 |
