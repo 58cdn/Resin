@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:browser:manual": "node tests/ip-quality-manual-browser.cjs",
     "test:browser:byip": "node tests/ip-quality-byip-browser.cjs",
     "test:browser": "node tests/ip-quality-list-browser.cjs",
     "dev": "vite",

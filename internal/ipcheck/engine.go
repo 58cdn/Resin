@@ -348,6 +348,12 @@ func (e *Engine) check(ctx context.Context, request CheckRequest, generation uin
 func (e *Engine) checkSource(ctx context.Context, request CheckRequest, generation uint64, name string, force bool) (*SourceResult, error) {
 	key := keyFor(request, name)
 	e.mu.Lock()
+	// Cancellation may happen while waiting for another source's cache save.
+	// Do not join or create independent work after this caller has left.
+	if err := ctx.Err(); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
 	if e.closed {
 		e.mu.Unlock()
 		return nil, ErrClosed
@@ -419,13 +425,15 @@ func (e *Engine) run(ctx context.Context, f *flight, force bool) {
 	select {
 	case e.sem <- struct{}{}:
 		defer func() { <-e.sem }()
-		if !force && e.store != nil {
+		if ctx.Err() == nil && !force && e.store != nil {
 			loaded, err := e.store.Load(ctx, f.key.kind, f.key.subject, f.key.source)
 			if err == nil && e.validResult(loaded, f.key, f.request.EgressIP, f.request.EgressVersion, time.Now()) {
 				result = cloneSource(loaded)
 			}
 		}
-		if result == nil {
+		if err := ctx.Err(); err != nil {
+			result = e.failure(f, err)
+		} else if result == nil {
 			result = e.execute(ctx, f)
 		}
 	case <-ctx.Done():

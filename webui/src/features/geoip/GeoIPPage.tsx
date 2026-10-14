@@ -94,6 +94,7 @@ export function GeoIPPage() {
         </div>
       </header>
 
+      <Link className="ip-quality-settings" to="/resources/ip-quality-check">{t("手动 IP 质量检测")}</Link>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       <Card className="platform-cards-container platform-directory-card" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>

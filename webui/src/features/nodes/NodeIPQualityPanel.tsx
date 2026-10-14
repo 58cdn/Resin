@@ -120,6 +120,7 @@ export function NodeIPQualityPanel({ nodeHash, egressIP, egressVersion, active }
       </details>
       <p className="ip-quality-caption">{t("结果是历史观测，不代表节点健康或账户可用性；未知不等于安全。")}</p>
       <Link className="ip-quality-settings" to="/plugins">{t("查看插件配置")}</Link>
+      <Link className="ip-quality-settings" to={`/resources/ip-quality-check?node=${encodeURIComponent(nodeHash)}`}>{t("手动检测此节点")}</Link>
     </section>
   );
 }
