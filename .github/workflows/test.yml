@@ -45,6 +45,7 @@ jobs:
         working-directory: webui
         run: |
           npm ci --no-audit --no-fund --maxsockets=2
+          npm test
           npm run build
       - name: Show toolchain
         run: |

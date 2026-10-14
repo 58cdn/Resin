@@ -193,8 +193,9 @@ func TestFlushBucket_RetainsPendingTaskUntilRepoRecovers(t *testing.T) {
 	})
 
 	// Force current bucket to be due for flush.
+	bucketStart := time.Now().Unix() - 2
 	mgr.bucket.mu.Lock()
-	mgr.bucket.currentStart = time.Now().Unix() - 2
+	mgr.bucket.currentStart = bucketStart
 	mgr.bucket.mu.Unlock()
 
 	if err := repo.Close(); err != nil {
@@ -218,6 +219,10 @@ func TestFlushBucket_RetainsPendingTaskUntilRepoRecovers(t *testing.T) {
 	defer recoveredRepo.Close()
 	mgr.repo = recoveredRepo
 
+	// Recovery may cross a bucket boundary. Deterministically enqueue the next
+	// empty bucket so retries also cover that case without depending on wall time.
+	retryBucketStart := mgr.bucket.CurrentBucketStartUnix()
+	mgr.advanceAndMaybeFlush(time.Unix(retryBucketStart+1, 0))
 	mgr.flushBucket()
 	mgr.pendingMu.Lock()
 	pendingAfterRecover := len(mgr.pendingTasks)
@@ -226,7 +231,8 @@ func TestFlushBucket_RetainsPendingTaskUntilRepoRecovers(t *testing.T) {
 		t.Fatalf("pending task count after recovery: got %d, want %d", pendingAfterRecover, 0)
 	}
 
-	from, to := int64(0), time.Now().Add(time.Minute).Unix()
+	// Verify the original pending bucket, not every bucket emitted during recovery.
+	from, to := bucketStart, bucketStart
 
 	requestRows, err := recoveredRepo.QueryRequests(from, to, "plat-1")
 	if err != nil {
@@ -297,5 +303,31 @@ func TestFlushBucket_RetainsPendingTaskUntilRepoRecovers(t *testing.T) {
 	}
 	if platformTotal != 2 {
 		t.Fatalf("platform latency sample count: got %d, want 2", platformTotal)
+	}
+
+	retryTraffic, err := recoveredRepo.QueryTraffic(retryBucketStart, retryBucketStart)
+	if err != nil {
+		t.Fatalf("QueryTraffic(retry bucket): %v", err)
+	}
+	if len(retryTraffic) != 1 || retryTraffic[0].IngressBytes != 0 || retryTraffic[0].EgressBytes != 0 {
+		t.Fatalf("retry bucket must contain zero new traffic: %+v", retryTraffic)
+	}
+	for _, platform := range []string{"", "plat-1"} {
+		rows, err := recoveredRepo.QueryAccessLatency(retryBucketStart, retryBucketStart, platform)
+		if err != nil {
+			t.Fatalf("QueryAccessLatency(retry bucket, %q): %v", platform, err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("retry latency rows for %q: got %d, want 1", platform, len(rows))
+		}
+		var buckets []int64
+		if err := json.Unmarshal([]byte(rows[0].BucketsJSON), &buckets); err != nil {
+			t.Fatalf("unmarshal retry buckets: %v", err)
+		}
+		for _, count := range buckets {
+			if count != 0 {
+				t.Fatalf("retry bucket repeated latency samples for %q: %v", platform, buckets)
+			}
+		}
 	}
 }
