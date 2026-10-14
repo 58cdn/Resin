@@ -128,6 +128,7 @@ func NewServerWithAddress(
 		authed.Handle("GET /api/v1/ip-checks/{ip}", HandleGetIPCheck(cp))
 		authed.Handle("POST /api/v1/ip-checks/lookup", HandleLookupIPCheck(cp))
 		authed.Handle("GET /api/v1/ip-checks/sources", HandleListIPCheckSources(cp))
+		authed.Handle("POST /api/v1/ip-checks/cache/nodes", HandleGetNodeIPCheckBatch(cp))
 
 		// GeoIP.
 		authed.Handle("GET /api/v1/geoip/status", HandleGeoIPStatus(cp))

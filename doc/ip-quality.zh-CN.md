@@ -27,6 +27,7 @@ TTL 限制为 1 秒至 30 天；请求超时 100–60000 ms；目标 1–8 个�
 - `GET /api/v1/ip-checks/{ip}`：只读该公网 IP 的 by-IP 缓存。
 - `POST /api/v1/ip-checks/lookup`：`{"ip":"8.8.8.8","sources":["db-ip"],"force":false}`。只允许 by-IP 数据源。
 - `GET /api/v1/ip-checks/sources`：查看启用状态、类型及不可用原因。
+- `POST /api/v1/ip-checks/cache/nodes`：批量只读节点缓存，`{"node_hashes":["32位节点hash"]}`；最多 50 项，规范化去重、限流、取消及逐项失败。详见[批量缓存 API 契约](ip-quality-batch-cache.zh-CN.md)。不会触发检测。
 
 非法 IP/请求返回 400，节点不存在或未检测返回 404，节点无公网出口返回 409，插件未运行返回 503。数值/布尔未知为 null，分类未知为 `unknown`；source unavailable 不伪造成功。返回的原始 source 结果是事实来源，summary 是派生视图。
 
@@ -88,12 +89,12 @@ by-IP 缓存按规范化出口 IP/source 共享；via-node 按 node hash/source 
 
 ## 明确未实现
 
-本提交实现 P1 插件框架与可独立验证的数据源。以下仍有明确边界：
+已实现 P1 插件框架与可独立验证的数据源、P2 节点详情只读面板，以及批量只读缓存接口。[路线图与 PR 依赖](ip-quality-roadmap.zh-CN.md)列出验证记录和完整剩余切片；以下仍有明确边界：
 
 - ippure：仅报告 unavailable；接口与许可尚未确认，不发请求。
 - Cloudflare challenge、AI region：显式配置端点适配与 fixtures 已实现；不内置未经确认的第三方端点或官方地区名单，也不能检测账户级可用性。
 - 不读取 Scamalytics/ipdata/Radar 密钥，也不调用其 API；后续需另行实现和测试。配置中不接受密钥字段。
-- P2 剩余：节点列表质量徽标、by-IP 查询、手动检测控件、批量/后台任务、配额/源熔断、风险评分、需密钥情报源。节点详情只读缓存面板已实现。
+- P2：本分支包含已合并的 PR14 节点详情只读面板和 PR15 批量缓存 API；列表徽标另有尚未发布的独立工作，不包含在此。by-IP 页面、手动检测控件、批量检测/后台任务、配额/源熔断、风险评分、需密钥情报源仍未实现。批量读缓存不等于批量检测。
 - P3：Platform 过滤与节点列表质量过滤。
 - P4：DNS leak、自建权威 DNS、外部 capability 协议调研。
 - 不引入浏览器自动化或未确认条款的 HTML 抓取。
