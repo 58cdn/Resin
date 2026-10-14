@@ -29,3 +29,12 @@
 .ip-quality-panel summary:focus-visible,
 .ip-quality-settings:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 @media (max-width: 480px) { .ip-quality-facts { grid-template-columns: 1fr; } }
+
+.ip-quality-list-toolbar { padding-bottom: 14px; min-width: 0; }
+.ip-quality-list-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ip-quality-list-actions progress { width: min(160px, 100%); accent-color: var(--primary); }
+.ip-quality-list-status { margin: 6px 0 0; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.ip-quality-cache-button { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; background: transparent; border: 0; padding: 6px 2px; min-height: 36px; color: inherit; cursor: pointer; text-align: left; }
+.ip-quality-cache-button small { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.ip-quality-cache-button:hover .badge { text-decoration: underline; }
+.ip-quality-cache-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
