@@ -1,4 +1,5 @@
-import type { IPQualityResult, IPQualitySourceStatus } from "../nodes/ip-quality";
+import type { IPQualityCheckResult, IPQualitySourceStatus } from "../nodes/ip-quality";
+import { observationTimestamp, parseSuppressions } from "./suppression.ts";
 
 export type SubjectKind = "ip" | "node";
 export type NodeIdentity = { hash: string; ip: string; version: string; name: string };
@@ -60,23 +61,38 @@ export function validSelection(prepared: PreparedCheck, names: string[]): boolea
   return names.length > 0 && new Set(names).size === names.length && names.every(name => prepared.sources.some(source => source.name === name && selectable(source, prepared.kind)));
 }
 
-export function isManualResult(value: unknown, prepared: PreparedCheck, names?: string[]): value is IPQualityResult {
-  if (!object(value) || typeof value.egress_ip !== "string" || normalizeManualIP(value.egress_ip) !== prepared.ip || typeof value.checked_at !== "string" || !Number.isFinite(Date.parse(value.checked_at)) || !object(value.summary) || !Array.isArray(value.sources)) return false;
+export function isManualResult(value: unknown, prepared: PreparedCheck, names?: string[]): value is IPQualityCheckResult {
+  if (!object(value) || typeof value.egress_ip !== "string" || normalizeManualIP(value.egress_ip) !== prepared.ip || !object(value.summary) || !Array.isArray(value.sources) || value.sources.length > 8) return false;
+  const suppressed = parseSuppressions(value.suppressed_sources);
+  if (!suppressed || (suppressed.length > 0 && (names === undefined || prepared.kind !== "node"))) return false;
+  if (value.sources.length === 0 && suppressed.length > 0 ? value.checked_at !== undefined : !observationTimestamp(value.checked_at)) return false;
   const summary = value.summary;
   if (["country", "city", "as_org", "ip_type", "ip_origin", "risk_level", "cf_challenge"].some(key => summary[key] != null && typeof summary[key] !== "string")) return false;
   if (["asn", "fraud_score"].some(key => summary[key] != null && (typeof summary[key] !== "number" || !Number.isFinite(summary[key])))) return false;
   if (summary.egress_consistent != null && typeof summary.egress_consistent !== "boolean") return false;
   if (summary.abuse_flags != null && (!Array.isArray(summary.abuse_flags) || summary.abuse_flags.some(flag => typeof flag !== "string"))) return false;
   if (["services", "egress_ips_by_site"].some(key => summary[key] != null && (!object(summary[key]) || Object.values(summary[key]).some(item => typeof item !== "string")))) return false;
+  // A malformed response cannot attach reassuring (or adverse) source-owned
+  // facts to an execution that explicitly withheld that source's observation.
+  const limited = new Set(suppressed.map(source => source.source));
+  if (limited.has("egress-consistency") && (summary.egress_consistent != null || (object(summary.egress_ips_by_site) && Object.keys(summary.egress_ips_by_site).length > 0))) return false;
+  if (limited.has("cloudflare-challenge") && summary.cf_challenge != null && summary.cf_challenge !== "unknown") return false;
+  if (limited.has("ai-region") && object(summary.services) && Object.values(summary.services).some(value => value !== "unknown")) return false;
   const seen = new Set<string>();
   for (const source of value.sources) {
-    if (!object(source) || typeof source.source !== "string" || !Object.hasOwn(kinds, source.source) || kinds[source.source] !== source.kind || (prepared.kind === "ip" && source.kind !== "by_ip") || seen.has(source.source) || typeof source.ok !== "boolean" || typeof source.status !== "string" || typeof source.checked_at !== "string" || !Number.isFinite(Date.parse(source.checked_at)) || typeof source.expires_at !== "string" || !(Date.parse(source.expires_at) > Date.parse(source.checked_at)) || !object(source.data) || (source.error !== undefined && typeof source.error !== "string") || (source.egress_ip !== undefined && (typeof source.egress_ip !== "string" || normalizeManualIP(source.egress_ip) !== prepared.ip))) return false;
+    if (!object(source) || typeof source.source !== "string" || !Object.hasOwn(kinds, source.source) || kinds[source.source] !== source.kind || (prepared.kind === "ip" && source.kind !== "by_ip") || seen.has(source.source) || typeof source.ok !== "boolean" || typeof source.status !== "string" || !observationTimestamp(source.checked_at) || !observationTimestamp(source.expires_at) || !(Date.parse(source.expires_at) > Date.parse(source.checked_at)) || !object(source.data) || (source.error !== undefined && typeof source.error !== "string") || (source.egress_ip !== undefined && (typeof source.egress_ip !== "string" || normalizeManualIP(source.egress_ip) !== prepared.ip))) return false;
+    seen.add(source.source);
+  }
+  if (value.sources.length > 0 && Date.parse(value.checked_at as string) !== Math.max(...value.sources.map(source => Date.parse(source.checked_at)))) return false;
+  for (const source of suppressed) {
+    if (seen.has(source.source)) return false;
     seen.add(source.source);
   }
   return names === undefined || (seen.size === names.length && names.every(name => seen.has(name)));
 }
 
-export function resultStatus(result: IPQualityResult, now: number): string {
+export function resultStatus(result: IPQualityCheckResult, now: number): string {
+  if (result.suppressed_sources?.length) return result.sources.length ? "部分来源受到本地限制，请分别查看观测与限制原因。" : "所选来源受到本地限制，本次没有新的完整来源观测。";
   if (!result.sources.length) return "未返回来源观测，不能判断检测通过。";
   if (result.sources.some(source => !(Date.parse(source.expires_at) > now))) return "部分观测已过期，已隐藏摘要和过期数据。";
   const count = result.sources.filter(source => source.ok && source.status === "ok").length;

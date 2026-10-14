@@ -98,12 +98,12 @@ by-IP 缓存按规范化出口 IP/source 共享；via-node 按 node hash/source 
 
 ## 明确未实现
 
-已实现 P1 插件框架与可独立验证的数据源、P2 缓存界面与接口、显式单次与批量任务控件、[独立节点拨号指标与只读 API](ip-quality-dial-metrics.zh-CN.md)和[默认关闭的显式节点定期检测](ip-quality-periodic.zh-CN.md)。本切片提供[尚未接入生产的请求控制核心](ip-quality-request-guards-core.zh-CN.md)。[路线图与 PR 依赖](ip-quality-roadmap.zh-CN.md)列出验证记录和完整剩余切片；以下仍有明确边界：
+已实现 P1 插件框架与可独立验证的数据源、P2 缓存界面与接口、显式单次与批量任务控件、[独立节点拨号指标与只读 API](ip-quality-dial-metrics.zh-CN.md)和[默认关闭的显式节点定期检测](ip-quality-periodic.zh-CN.md)。本切片把独立控制核心接入[默认关闭的来源请求限制和保护熔断](ip-quality-request-guards.zh-CN.md)，同步区分抑制与观测。[路线图与 PR 依赖](ip-quality-roadmap.zh-CN.md)列出验证记录和完整剩余切片；以下仍有明确边界：
 
 - ippure：仅报告 unavailable；接口与许可尚未确认，不发请求。
 - Cloudflare challenge、AI region：显式配置端点适配与 fixtures 已实现；不内置未经确认的第三方端点或官方地区名单，也不能检测账户级可用性。
 - 不读取 Scamalytics/ipdata/Radar 密钥，也不调用其 API；后续需另行实现和测试。配置中不接受密钥字段。
-- P2：PR14 节点详情面板、PR15 批量缓存 API、PR17 列表徽标、PR18 by-IP 只读页、PR19 显式单次检测、PR20 批量任务 API、PR21 任务 UI、PR22 实际拨号累计和 PR23 显式名单定期检测已合并。本切片的请求控制器仅为独立核心，尚未进入实际检测路径；全节点池扫描、结果/任务/来源指标与历史序列、来源控制运行接入、风险评分及需密钥情报源仍未实现。批量读缓存不等于批量检测，显式名单不等于全池扫描，拨号成功不等于质量检测成功。
+- P2：PR14 节点详情面板、PR15 批量缓存 API、PR17 列表徽标、PR18 by-IP 只读页、PR19 显式单次检测、PR20 批量任务 API、PR21 任务 UI、PR22 实际拨号累计和 PR23 显式名单定期检测已合并。PR24 独立核心后，本切片接入逐来源 HTTP 尝试控制；全节点池扫描、结果/任务/来源指标与历史序列、供应商持久账号硬配额、风险评分及需密钥情报源仍未实现。批量读缓存不等于批量检测，显式名单不等于全池扫描，拨号成功不等于质量检测成功。
 - P3：Platform 过滤与节点列表质量过滤。
 - P4：DNS leak、自建权威 DNS、外部 capability 协议调研。
 - 不引入浏览器自动化或未确认条款的 HTML 抓取。

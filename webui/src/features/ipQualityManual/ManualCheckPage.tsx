@@ -8,7 +8,8 @@ import { Input } from "../../components/ui/Input";
 import { useI18n } from "../../i18n";
 import { formatDateTime } from "../../lib/time";
 import { isFreshSource, nextExpiryDelay, qualityValueLabel } from "../nodes/ip-quality";
-import type { IPQualityResult } from "../nodes/ip-quality";
+import type { IPQualityCheckResult } from "../nodes/ip-quality";
+import { SourceSuppressions } from "./SourceSuppressions";
 import { normalizeSubject, resultStatus, selectable } from "./model";
 import type { SubjectKind } from "./model";
 import { useManualCheck } from "./use-manual-check";
@@ -85,7 +86,7 @@ export function ManualCheckPage() {
   </section>;
 }
 
-function ManualResult({ result, now, cache, kind }: { result: IPQualityResult; now: number; cache: boolean; kind: SubjectKind }) {
+function ManualResult({ result, now, cache, kind }: { result: IPQualityCheckResult; now: number; cache: boolean; kind: SubjectKind }) {
   const { t } = useI18n();
   const fresh = result.sources.some(source => source.ok && source.status === "ok") && result.sources.every(source => isFreshSource(source, now));
   const summary = result.summary;
@@ -100,7 +101,8 @@ function ManualResult({ result, now, cache, kind }: { result: IPQualityResult; n
     ] : []),
     [t("欺诈分数 / 风险等级"), `${numeric(summary.fraud_score)} / ${t(qualityValueLabel(summary.risk_level))}`], [t("滥用标记"), summary.abuse_flags?.length ? summary.abuse_flags.join(", ") : t("暂无标记，不代表无风险")],
   ];
-  return <div className="ip-manual-result"><h3>{t(cache ? "当前缓存响应" : "本次检测响应")}</h3><p>{result.egress_ip} · {t("最近观测")}: {formatDateTime(result.checked_at)}</p>
+  return <div className="ip-manual-result"><h3>{t(cache ? "当前缓存响应" : "本次检测响应")}</h3><p>{result.egress_ip}{result.checked_at ? <> · {t("最近观测")}: {formatDateTime(result.checked_at)}</> : null}</p>
+    <SourceSuppressions sources={result.suppressed_sources} />
     <p className="ip-manual-note">{t("响应不保证持久化成功；可显式读取当前缓存核对。未知不等于通过。")}</p>
     {fresh ? <dl className="ip-quality-facts">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl> : null}
     <h4>{t("来源观测")}</h4>{result.sources.map(source => {

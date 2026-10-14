@@ -35,6 +35,7 @@ func ipQualityBuiltin() plugin.Builtin {
 				{Name: "background_nodes", Label: "Periodic node hashes", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Up to 50 explicit unique node hashes; no node-pool or filter expansion."},
 				{Name: "background_sources", Label: "Periodic sources", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Explicit available and enabled sources. Cached results are reused until expiry."},
 				{Name: "background_interval", Label: "Periodic interval", Type: pluginsdk.FieldString, Default: raw(`""`), Description: "5m to 24h; first run waits a full interval, then waits again after each bounded cycle."},
+				{Name: "source_guards", Label: "Source HTTP attempt controls", Type: pluginsdk.FieldJSON, Default: raw(`[]`), Description: "Default off. Up to three explicit network-source policies: source, enabled, qps, burst, daily_limit, consecutive_failure_threshold, open_for (1s to 1h). Process-local admitted-attempt limits, not provider billing quotas; no automatic retry."},
 			},
 		},
 		NewWithHost: func(host plugin.BuiltinHost) pluginsdk.Plugin { return &ipQuality{host: host} },
@@ -83,6 +84,7 @@ func (p *ipQuality) BuiltinService() any {
 }
 func (p *ipQuality) Activate() {
 	if e := p.engine.Load(); e != nil {
+		e.ActivateRequestGuards()
 		e.ActivateBackground()
 	}
 }

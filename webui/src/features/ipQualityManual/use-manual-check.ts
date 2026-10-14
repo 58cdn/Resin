@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiRequest } from "../../lib/api-client";
-import type { IPQualityResult } from "../nodes/ip-quality";
+import type { IPQualityCheckResult } from "../nodes/ip-quality";
 import { CHECK_WAIT_MS, READ_WAIT_MS, isManualResult, manualErrorKey, nodeIdentity, normalizeSubject, sameNode, sourceCatalog, validSelection } from "./model";
 import type { PreparedCheck, SubjectKind } from "./model";
 
 type Operation = "prepare" | "check" | "cache";
-type State = { phase: "idle" | "prepare" | "check" | "cache" | "ready" | "done" | "error" | "stopped"; prepared?: PreparedCheck; result?: IPQualityResult; operation?: Operation; message?: string; receivedAt?: number };
+type State = { phase: "idle" | "prepare" | "check" | "cache" | "ready" | "done" | "error" | "stopped"; prepared?: PreparedCheck; result?: IPQualityCheckResult; operation?: Operation; message?: string; receivedAt?: number };
 
 export function useManualCheck() {
   const [state, setState] = useState<State>({ phase: "idle" });

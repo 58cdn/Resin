@@ -9,6 +9,7 @@ import { Textarea } from "../../components/ui/Textarea";
 import { useI18n } from "../../i18n";
 import { formatDateTime } from "../../lib/time";
 import { selectable } from "../ipQualityManual/model";
+import { SourceSuppressions } from "../ipQualityManual/SourceSuppressions";
 import { isTerminal, normalizeBatchHashes } from "./model";
 import type { BatchItem, BatchTask } from "./model";
 import { useBatchTask } from "./use-batch-task";
@@ -17,7 +18,7 @@ import "../ipQualityManual/manual-check.css";
 import "./batch-task.css";
 
 const lifecycle = { queued: "排队中", running: "执行中", canceling: "正在取消", completed: "已返回结果", failed: "执行失败", canceled: "已取消" };
-const observation = { all_ok: "全部来源已返回观测", partial_failure: "部分来源失败", all_failed: "所有来源失败", unavailable: "来源不可用", no_observations: "没有来源观测" };
+const observation = { all_ok: "全部来源已返回观测", partial_failure: "部分来源失败", all_failed: "所有来源失败", unavailable: "来源不可用", no_observations: "没有来源观测", suppressed: "所选来源受到本地限制", partial_suppression: "部分来源受到本地限制" };
 
 export function BatchTaskPage() {
   const { t } = useI18n();
@@ -97,6 +98,7 @@ function ItemResult({ item }: { item: BatchItem }) {
     {item.started_at ? <p>{t("开始时间")}: {formatDateTime(item.started_at)}</p> : null}{item.finished_at ? <p>{t("结束时间")}: {formatDateTime(item.finished_at)}</p> : null}
     {item.egress_ip ? <p>{t("任务记录的出口 IP")}: {item.egress_ip}</p> : null}{item.checked_at ? <p>{t("观测时间")}: {formatDateTime(item.checked_at)}</p> : null}
     {item.error ? <p className="ip-quality-source-error">{item.error.code}: {item.error.message}</p> : null}
+    <SourceSuppressions sources={item.suppressed_sources} />
     {item.sources?.map(source => <div className="ip-batch-source" key={source.source}><strong>{source.source}</strong><span>{t(source.ok ? "已获取观测" : source.status === "unavailable" ? "不可用" : "检测失败")}</span><p>{t("观测时间")}: {formatDateTime(source.checked_at)} · {t("到期时间")}: {formatDateTime(source.expires_at)}</p>{source.error ? <p className="ip-quality-source-error">{source.error}</p> : null}</div>)}
     <Link className="ip-quality-settings" to={`/resources/ip-quality-check?node=${item.node_hash}`}>{t("打开单节点页面核对当前缓存")}</Link>
   </details></li>;

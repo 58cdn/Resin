@@ -54,15 +54,16 @@ type BatchProgress struct {
 }
 
 type BatchItem struct {
-	NodeHash          string        `json:"node_hash"`
-	State             string        `json:"state"`
-	StartedAt         *time.Time    `json:"started_at,omitempty"`
-	FinishedAt        *time.Time    `json:"finished_at,omitempty"`
-	EgressIP          string        `json:"egress_ip,omitempty"`
-	CheckedAt         *time.Time    `json:"checked_at,omitempty"`
-	ObservationStatus string        `json:"observation_status,omitempty"`
-	Sources           []BatchSource `json:"sources,omitempty"`
-	Error             *BatchError   `json:"error,omitempty"`
+	NodeHash          string             `json:"node_hash"`
+	State             string             `json:"state"`
+	StartedAt         *time.Time         `json:"started_at,omitempty"`
+	FinishedAt        *time.Time         `json:"finished_at,omitempty"`
+	EgressIP          string             `json:"egress_ip,omitempty"`
+	CheckedAt         *time.Time         `json:"checked_at,omitempty"`
+	ObservationStatus string             `json:"observation_status,omitempty"`
+	Sources           []BatchSource      `json:"sources,omitempty"`
+	SuppressedSources []SuppressedSource `json:"suppressed_sources,omitempty"`
+	Error             *BatchError        `json:"error,omitempty"`
 }
 
 type BatchError struct {
@@ -370,7 +371,12 @@ func (b *batchTasks) worker() {
 		} else {
 			item.State = "completed"
 			item.EgressIP = result.EgressIP
-			item.CheckedAt = timePointer(result.CheckedAt)
+			if !result.CheckedAt.IsZero() {
+				item.CheckedAt = timePointer(result.CheckedAt)
+			}
+			for _, source := range result.SuppressedSources {
+				item.SuppressedSources = append(item.SuppressedSources, cloneSuppressed(source))
+			}
 			item.ObservationStatus = "all_failed"
 			ok, unavailable := 0, 0
 			for _, source := range result.Sources {
@@ -383,6 +389,10 @@ func (b *batchTasks) worker() {
 				}
 			}
 			switch {
+			case len(result.SuppressedSources) > 0 && len(result.Sources) == 0:
+				item.ObservationStatus = "suppressed"
+			case len(result.SuppressedSources) > 0:
+				item.ObservationStatus = "partial_suppression"
 			case len(result.Sources) == 0:
 				item.ObservationStatus = "no_observations"
 			case ok == len(result.Sources):
@@ -420,6 +430,10 @@ func (b *batchTasks) snapshotLocked(job *batchJob) *BatchTask {
 		task.Items[i] = item
 		task.Items[i].StartedAt, task.Items[i].FinishedAt, task.Items[i].CheckedAt = copyTime(item.StartedAt), copyTime(item.FinishedAt), copyTime(item.CheckedAt)
 		task.Items[i].Sources = append([]BatchSource(nil), item.Sources...)
+		task.Items[i].SuppressedSources = make([]SuppressedSource, len(item.SuppressedSources))
+		for j, source := range item.SuppressedSources {
+			task.Items[i].SuppressedSources[j] = cloneSuppressed(source)
+		}
 		if item.Error != nil {
 			copy := *item.Error
 			task.Items[i].Error = &copy

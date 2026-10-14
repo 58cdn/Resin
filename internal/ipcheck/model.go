@@ -136,10 +136,11 @@ type Summary struct {
 }
 
 type Result struct {
-	EgressIP  string         `json:"egress_ip"`
-	CheckedAt time.Time      `json:"checked_at"`
-	Summary   Summary        `json:"summary"`
-	Sources   []SourceResult `json:"sources"`
+	EgressIP          string             `json:"egress_ip"`
+	CheckedAt         time.Time          `json:"checked_at,omitzero"`
+	Summary           Summary            `json:"summary"`
+	Sources           []SourceResult     `json:"sources"`
+	SuppressedSources []SuppressedSource `json:"suppressed_sources,omitempty"`
 }
 
 type SourceStatus struct {

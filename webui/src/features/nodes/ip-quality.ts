@@ -1,3 +1,5 @@
+import type { SuppressedSource } from "../ipQualityManual/suppression";
+
 export type IPQualitySourceResult = {
   source: string;
   kind: "via_node" | "by_ip";
@@ -38,6 +40,13 @@ export type IPQualitySourceStatus = {
   requires_key: boolean;
   reason?: string;
   attribution?: string;
+};
+
+// A fresh check may contain only local suppression and no observation time.
+// Cache responses retain the original observation-only IPQualityResult shape.
+export type IPQualityCheckResult = Omit<IPQualityResult, "checked_at"> & {
+  checked_at?: string;
+  suppressed_sources?: SuppressedSource[];
 };
 
 export function isFreshSource(source: IPQualitySourceResult, now: number): boolean {

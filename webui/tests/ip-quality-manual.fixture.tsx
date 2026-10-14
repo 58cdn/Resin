@@ -36,6 +36,12 @@ function result(ip: string, names: string[], current: string) {
   const checked_at = new Date(Date.now() - 60000).toISOString();
   const expires_at = new Date(Date.now() + (current === "expired" ? -1000 : current === "expiry" ? 1200 : 3600000)).toISOString();
   const summary = { country: "US", city: current === "late" ? "Old response" : "Fixture city", asn: null, as_org: "unknown", ip_type: "unknown", ip_origin: "unknown", fraud_score: 0, abuse_flags: [], cf_challenge: "unknown", egress_consistent: false, egress_ips_by_site: {}, services: {}, risk_level: "unknown" };
+  if (current === "suppressed" || current === "partial-suppression") {
+    const observed = names.filter(source => source === "db-ip");
+    return { egress_ip: ip, ...(observed.length ? { checked_at } : {}), summary: { ...summary, egress_consistent: null },
+      sources: observed.map(source => ({ source, kind: "by_ip", ok: true, status: "ok", checked_at, expires_at, data: { country: "US" } })),
+      suppressed_sources: [{ source: "egress-consistency", kind: "via_node", admitted: current === "partial-suppression" ? 1 : 0, suppressed: 2, reasons: [{ reason: "source_daily_budget", count: 2, retry_at: "2026-10-15T00:00:00Z" }] }] };
+  }
   return {
     egress_ip: current === "wrong-ip" ? "9.9.9.9" : ip, checked_at,
     summary: current === "malformed-summary" ? { ...summary, ip_type: { toString: null } } : summary,
@@ -79,7 +85,7 @@ window.fetch = async (input, init) => {
   else if (post) {
     payload = result(typeof body.ip === "string" ? body.ip : "8.8.8.8", body.sources as string[], current);
     // Models partial/cache mutation even if the final HTTP response fails.
-    saved = payload;
+    if (!["suppressed", "partial-suppression"].includes(current)) saved = payload;
   } else if (cache) payload = saved;
   else payload = { db_mtime: "", next_scheduled_update: "" };
   const response = new Response(current === "non-json" && post ? "fixture html" : JSON.stringify(status === 200 ? payload : { error: { code: "FIXTURE", message: "Fixture error" } }), { status, headers: { "Content-Type": current === "non-json" && post ? "text/html" : "application/json" } });

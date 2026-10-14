@@ -38,6 +38,12 @@ function task(id: string, envelope: Envelope, state: string, mode: string) {
     if (state === "running") return index ? { node_hash, state: "queued" } : { node_hash, state: "running", started_at: started };
     if (state === "canceled") return { node_hash, state: "canceled", finished_at: finished };
     if (mode === "failed-item") return { node_hash, state: "failed", started_at: started, finished_at: finished, error: { code: "NOT_FOUND", message: "<b>Fixture node missing</b>" } };
+    if (mode === "suppressed" || mode === "partial-suppression") {
+      const sources = envelope.sources.filter(source => source === "db-ip").map(source => ({ source, kind: "by_ip", ok: true, status: "ok", checked_at: observed, expires_at: expires }));
+      return { node_hash, state: "completed", started_at: started, finished_at: finished, egress_ip: "8.8.8.8", ...(sources.length ? { checked_at: observed } : {}),
+        observation_status: sources.length ? "partial_suppression" : "suppressed", sources,
+        suppressed_sources: [{ source: "egress-consistency", kind: "via_node", admitted: 0, suppressed: 1, reasons: [{ reason: "source_half_open_busy", count: 1 }] }] };
+    }
     const sources = mode === "empty" ? [] : envelope.sources.map((source, sourceIndex) => {
       const ok = mode !== "all-failed" && mode !== "unavailable" && !(mode === "partial" && sourceIndex > 0);
       return { source, kind: source === "db-ip" ? "by_ip" : "via_node", ok, status: mode === "unavailable" ? "unavailable" : ok ? "ok" : "error", checked_at: observed, expires_at: expires, ...(!ok ? { error: "<b>Fixture source failed</b>" } : {}) };

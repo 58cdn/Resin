@@ -1,9 +1,11 @@
 import { normalizeManualIP } from "../ipQualityManual/model.ts";
+import { parseSuppressions } from "../ipQualityManual/suppression.ts";
+import type { SuppressedSource } from "../ipQualityManual/suppression.ts";
 
 export type BatchEnvelope = { request_id: string; node_hashes: string[]; sources: string[]; force: boolean };
 export type BatchTaskState = "queued" | "running" | "canceling" | "completed" | "canceled";
 export type BatchItemState = "queued" | "running" | "completed" | "failed" | "canceled";
-export type BatchObservationStatus = "all_ok" | "partial_failure" | "all_failed" | "unavailable" | "no_observations";
+export type BatchObservationStatus = "all_ok" | "partial_failure" | "all_failed" | "unavailable" | "no_observations" | "suppressed" | "partial_suppression";
 export type BatchProgress = { total: number; queued: number; running: number; completed: number; failed: number; canceled: number };
 export type BatchError = { code: "NOT_FOUND" | "CONFLICT" | "SERVICE_UNAVAILABLE" | "INTERNAL"; message: string };
 export type BatchSource = {
@@ -24,6 +26,7 @@ export type BatchItem = {
   checked_at?: string;
   observation_status?: BatchObservationStatus;
   sources?: BatchSource[];
+  suppressed_sources?: SuppressedSource[];
   error?: BatchError;
 };
 export type BatchTask = {
@@ -93,7 +96,8 @@ function parseSource(value: unknown): BatchSource | null {
     checked_at: value.checked_at, expires_at: value.expires_at, ...(value.error !== undefined ? { error: value.error as string } : {}) };
 }
 
-function observation(sources: BatchSource[]): BatchObservationStatus {
+function observation(sources: BatchSource[], suppressed: SuppressedSource[]): BatchObservationStatus {
+  if (suppressed.length) return sources.length ? "partial_suppression" : "suppressed";
   if (!sources.length) return "no_observations";
   const ok = sources.filter(source => source.ok && source.status === "ok").length;
   if (ok === sources.length) return "all_ok";
@@ -117,7 +121,7 @@ function parseItem(value: unknown, names: string[], createdAt: string): BatchIte
       : item.finished_at === undefined || (value.state !== "canceled" && item.started_at === undefined)) return null;
 
   if (value.state !== "completed") {
-    if (value.egress_ip !== undefined || value.checked_at !== undefined || value.observation_status !== undefined
+    if (value.egress_ip !== undefined || value.checked_at !== undefined || value.observation_status !== undefined || value.suppressed_sources !== undefined
       || (value.sources !== undefined && (!Array.isArray(value.sources) || value.sources.length !== 0))) return null;
     if (value.state === "failed") {
       if (!object(value.error) || !member(errorCodes, value.error.code) || !text(value.error.message, 512) || !value.error.message) return null;
@@ -126,7 +130,9 @@ function parseItem(value: unknown, names: string[], createdAt: string): BatchIte
     return item;
   }
 
-  if (value.error !== undefined || typeof value.egress_ip !== "string" || value.egress_ip.length > 45 || !timestamp(value.checked_at)) return null;
+  if (value.error !== undefined || typeof value.egress_ip !== "string" || value.egress_ip.length > 45) return null;
+  const suppressed = parseSuppressions(value.suppressed_sources);
+  if (!suppressed) return null;
   // This validates literal syntax; the server remains authoritative for its
   // public-address policy. No URL, path, hostname or scoped IPv6 is accepted.
   const ip = normalizeManualIP(value.egress_ip);
@@ -137,11 +143,15 @@ function parseItem(value: unknown, names: string[], createdAt: string): BatchIte
     if (!parsed || sources.some(source => source.source === parsed.source)) return null;
     sources.push(parsed);
   }
-  if (value.observation_status !== observation(sources) || (sources.length > 0 && !sameSet(sources.map(source => source.source), names))) return null;
+  const observedNames = sources.map(source => source.source);
+  if (suppressed.some(source => observedNames.includes(source.source))) return null;
+  const coveredNames = [...observedNames, ...suppressed.map(source => source.source)];
+  if (value.observation_status !== observation(sources, suppressed) || (coveredNames.length > 0 && !sameSet(coveredNames, names))) return null;
+  if (sources.length === 0 && suppressed.length > 0 ? value.checked_at !== undefined : !timestamp(value.checked_at)) return null;
   // Cache observations may predate the task or already be expired. They are
   // historical metadata, so neither Date.now() nor created_at is a freshness gate.
-  if (sources.length && Date.parse(value.checked_at) !== Math.max(...sources.map(source => Date.parse(source.checked_at)))) return null;
-  return { ...item, egress_ip: ip, checked_at: value.checked_at, observation_status: observation(sources), sources };
+  if (sources.length && Date.parse(value.checked_at as string) !== Math.max(...sources.map(source => Date.parse(source.checked_at)))) return null;
+  return { ...item, egress_ip: ip, ...(value.checked_at !== undefined ? { checked_at: value.checked_at as string } : {}), observation_status: observation(sources, suppressed), sources, ...(suppressed.length ? { suppressed_sources: suppressed } : {}) };
 }
 
 /** Validate ownership and internal consistency before exposing task metadata. */
