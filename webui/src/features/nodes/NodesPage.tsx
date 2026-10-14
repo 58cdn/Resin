@@ -21,6 +21,7 @@ import { getNode, listNodes, probeEgress, probeLatency } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import { SubscriptionFilterSelect } from "./SubscriptionFilterSelect";
+import { NodeIPQualityPanel } from "./NodeIPQualityPanel";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
@@ -977,6 +978,14 @@ export function NodesPage() {
                   </div>
                 )}
               </section>
+
+              <NodeIPQualityPanel
+                key={detailNode.node_hash}
+                nodeHash={detailNode.node_hash}
+                egressIP={detailNode.egress_ip || ""}
+                egressVersion={detailNode.last_egress_update || ""}
+                active={drawerOpen}
+              />
 
               <section className="platform-drawer-section platform-ops-section">
                 <div className="platform-drawer-section-head">
