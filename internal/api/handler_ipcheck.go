@@ -18,15 +18,19 @@ type ipCheckLookupRequest struct {
 	Force   bool     `json:"force"`
 }
 
-// writeIPCheckResult excludes cache metadata from public responses without
+// publicIPCheckResult excludes cache metadata from public responses without
 // mutating a result that may also be retained by the engine or store.
-func writeIPCheckResult(w http.ResponseWriter, result *ipcheck.Result) {
+func publicIPCheckResult(result *ipcheck.Result) ipcheck.Result {
 	response := *result
 	response.Sources = append([]ipcheck.SourceResult{}, result.Sources...)
 	for i := range response.Sources {
 		response.Sources[i].ConfigFingerprint = ""
 	}
-	WriteJSON(w, http.StatusOK, response)
+	return response
+}
+
+func writeIPCheckResult(w http.ResponseWriter, result *ipcheck.Result) {
+	WriteJSON(w, http.StatusOK, publicIPCheckResult(result))
 }
 
 // HandleCheckNodeIP handles POST /api/v1/nodes/{hash}/actions/check-ip.
