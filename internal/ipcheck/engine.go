@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Resinat/Resin/internal/ipcheck/requestguard"
 	"github.com/Resinat/Resin/internal/node"
 )
 
@@ -36,6 +37,7 @@ type flight struct {
 	cancel     context.CancelFunc
 	waiters    int
 	result     *SourceResult
+	suppressed *SuppressedSource
 	err        error
 }
 
@@ -45,6 +47,7 @@ type flight struct {
 // checks start only after explicit activation of committed configuration.
 type Engine struct {
 	host              Host
+	guards            *requestguard.Controller
 	store             Store
 	config            Config
 	sources           map[string]Source
@@ -73,6 +76,16 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	var guards *requestguard.Controller
+	if provider, ok := host.(RequestGuardHost); ok {
+		guards = provider.RequestGuards()
+	}
+	for _, policy := range cfg.SourceGuards {
+		if policy.Enabled && guards == nil {
+			return nil, invalid("source_guards requires a process-lifetime request guard host")
+		}
+	}
+	cfg.SourceGuards = append([]SourceGuardPolicy(nil), cfg.SourceGuards...)
 	cfg.EnabledSources = append([]string(nil), cfg.EnabledSources...)
 	cfg.ConsistencyTargets = append([]string(nil), cfg.ConsistencyTargets...)
 	cfg.CloudflareChallengeURLs = append([]string(nil), cfg.CloudflareChallengeURLs...)
@@ -82,6 +95,7 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	cfg.BackgroundSources = append([]string(nil), cfg.BackgroundSources...)
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{host: host, store: store, config: cfg, ctx: ctx, cancel: cancel, sem: make(chan struct{}, cfg.MaxConcurrentChecks), sources: map[string]Source{}, enabled: map[string]bool{}, flights: map[cacheKey]*flight{}, nodes: map[node.Hash]nodeState{}, cache: map[cacheKey]*list.Element{}, lru: list.New(), closedDone: make(chan struct{})}
+	e.guards = guards
 	// Scheduling policy does not change observation semantics. Preserve the
 	// legacy fingerprint (including background_enabled:false) and cached facts.
 	observationConfig := cfg
@@ -89,6 +103,7 @@ func NewEngine(host Host, store Store, cfg Config) (*Engine, error) {
 	observationConfig.BackgroundNodes = nil
 	observationConfig.BackgroundSources = nil
 	observationConfig.BackgroundInterval = ""
+	observationConfig.SourceGuards = nil
 	encoded, _ := json.Marshal(observationConfig)
 	digest := sha256.Sum256(encoded)
 	e.fingerprint = hex.EncodeToString(digest[:])
@@ -344,18 +359,27 @@ func (e *Engine) check(ctx context.Context, request CheckRequest, generation uin
 		}(name)
 	}
 	results := make([]SourceResult, 0, len(names))
+	var suppressed []SuppressedSource
 	for range names {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case item := <-outcomes:
 			if item.err != nil {
+				var control *suppressedExecution
+				if errors.As(item.err, &control) {
+					suppressed = append(suppressed, cloneSuppressed(control.source))
+					continue
+				}
 				return nil, item.err
 			}
 			results = append(results, *item.result)
 		}
 	}
-	return aggregate(request.EgressIP, results, e.config.SourcePriority), nil
+	result := aggregate(request.EgressIP, results, e.config.SourcePriority)
+	sort.Slice(suppressed, func(i, j int) bool { return suppressed[i].Source < suppressed[j].Source })
+	result.SuppressedSources = suppressed
+	return result, nil
 }
 
 func (e *Engine) checkSource(ctx context.Context, request CheckRequest, generation uint64, name string, force bool) (*SourceResult, error) {
@@ -472,6 +496,10 @@ func (e *Engine) run(ctx context.Context, f *flight, force bool) {
 		f.err = nodeErr
 	case f.key.kind == SubjectNode && !e.generationCurrent(f.request, f.generation):
 		f.err = ErrNodeChanged
+	case f.suppressed != nil:
+		// A control decision is not an observation. Keep the previous memory
+		// and persistent cache untouched, including its original timestamps.
+		f.err = &suppressedExecution{source: cloneSuppressed(*f.suppressed)}
 	default:
 		f.result = cloneSource(result)
 		e.putMemoryLocked(f.key, result)
@@ -494,9 +522,13 @@ func (e *Engine) execute(ctx context.Context, f *flight) *SourceResult {
 	source := e.sources[f.key.source]
 	if source != nil && status.Enabled {
 		request := f.request
-		request.HTTP = &http.Client{Transport: viaNodeTransport{host: e.host, hash: request}, Timeout: e.timeout(), CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+		report := &attemptReport{}
+		request.HTTP = &http.Client{Transport: viaNodeTransport{host: e.host, hash: request, guards: e.guards, source: requestguard.Source(f.key.source), report: report}, Timeout: e.timeout(), CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 		var err error
 		result, err = source.Check(ctx, request)
+		if f.suppressed = report.snapshot(f.key.source); f.suppressed != nil {
+			return nil
+		}
 		if err != nil || result == nil {
 			return e.failure(f, err)
 		}

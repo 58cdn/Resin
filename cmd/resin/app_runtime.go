@@ -18,6 +18,7 @@ import (
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
 	"github.com/Resinat/Resin/internal/ipcheck"
+	"github.com/Resinat/Resin/internal/ipcheck/requestguard"
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
@@ -44,6 +45,7 @@ type resinApp struct {
 	endpointManager *endpointRuntimeManager
 	transportPool   *proxy.OutboundTransportPool
 	plugins         *plugin.Manager
+	ipCheckGuards   *requestguard.Controller
 }
 
 func run() error {
@@ -96,8 +98,9 @@ func loadDotenvFile(path string) error {
 
 func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp, error) {
 	app := &resinApp{
-		envCfg:     envCfg,
-		runtimeCfg: &atomic.Pointer[config.RuntimeConfig]{},
+		envCfg:        envCfg,
+		runtimeCfg:    &atomic.Pointer[config.RuntimeConfig]{},
+		ipCheckGuards: requestguard.New(nil),
 	}
 	app.runtimeCfg.Store(loadRuntimeConfig(engine))
 	if err := ensureDefaultAccountHeaderRule(engine); err != nil {

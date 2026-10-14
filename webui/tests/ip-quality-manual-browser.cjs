@@ -273,6 +273,27 @@ async function main() {
     assert.equal(await evaluate('document.querySelectorAll(".ip-quality-facts,.ip-quality-source pre").length'), 0);
     results.push('displayed evidence expires without an automatic read or check');
 
+    for (const [mode,names,label] of [['suppressed',['egress-consistency'],'Selected sources were locally limited'],['partial-suppression',['db-ip','egress-consistency'],'Some sources were locally limited']]) {
+      await reset(mode,true); await submit(true,names); await waitFor(includes(label));
+      assert.equal(await evaluate(includes('Local source request limits')),true);
+      assert.equal(await evaluate(includes('Source daily budget exhausted')),true);
+      assert.equal(await evaluate(includes('force cannot bypass source limits')),true);
+      assert.equal(await evaluate('document.querySelectorAll(".ip-quality-source pre").length'),names.length-1);
+      assert.equal(await evaluate('document.querySelectorAll(".ip-quality-facts").length'),names.length-1);
+      await pause(75); assert.equal(await evaluate(`${posts}.length`),1);
+      if (mode==='suppressed') {
+        assert.equal(await evaluate('document.querySelector(".ip-manual-result > p").textContent'),'8.8.8.8');
+        await evaluate(`${cache}.click()`); await waitFor(includes('may be unchecked')); assert.equal(await evaluate(`${posts}.length`),1);
+      }
+      if (mode==='partial-suppression') {
+        await call('Emulation.setDeviceMetricsOverride',{width:375,height:1100,deviceScaleFactor:1,mobile:true});
+        await evaluate('document.querySelector(".ip-manual-result").scrollIntoView()'); await screenshot('manual-suppression-mobile');
+        assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true);
+        await call('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false});
+      }
+    }
+    results.push('full and partial local suppression stay separate from observations, contain bounded reasons, do not auto-retry and do not invent cache or observation time');
+
     await reset('partial', true); await submit(true, ['db-ip', 'egress-consistency']); await waitFor(includes('Some sources failed'));
     const ax = await call('Accessibility.getFullAXTree', {});
     assert.ok(ax.nodes.some(node => node.role?.value === 'textbox' && node.name?.value === 'Node hash (32 hexadecimal characters)'));

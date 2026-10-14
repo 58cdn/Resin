@@ -168,6 +168,24 @@ async function main() {
     await evaluate('fixture.scenario("success","/resources/ip-quality-check")'); await waitFor('document.querySelector("#manual-subject")'); await evaluate(`document.querySelector('a[href="/resources/ip-quality-batch"]').focus()`); await key('Enter'); await waitFor('document.querySelector("#batch-hashes")'); assert.equal(await evaluate('fixture.requests.length'),0);
     results.push('keyboard submit/reset order and the real manual-page navigation link work without implicit API calls');
 
+    for (const [mode,names,label] of [['suppressed',['egress-consistency'],'Selected sources locally limited'],['partial-suppression',['db-ip','egress-consistency'],'Some sources locally limited']]) {
+      await reset(mode); await submit(names); await accepted(); await evaluate('fixture.expire(2000)'); await waitFor(includes('Task ended.'));
+      await evaluate('document.querySelectorAll(".ip-batch-items details").forEach(d=>d.open=true)');
+      assert.equal(await evaluate(includes(label)),true); assert.equal(await evaluate(includes('Source probe is still in progress')),true);
+      assert.equal(await evaluate('document.querySelectorAll(".ip-batch-source").length'),names.length-1);
+      assert.equal(await evaluate('document.querySelector(".ip-batch-items").textContent.includes("Earliest reevaluation time")'),false);
+      if(mode==='suppressed') assert.equal(await evaluate('document.querySelectorAll(".ip-batch-items details > p").length'),3);
+      assert.equal(await evaluate('fixture.deadlines().includes(2000)||fixture.deadlines().includes(300000)'),false);
+      await pause(75); assert.equal(await evaluate(`${posts}.length`),1);
+      if(mode==='partial-suppression') {
+        await call('Emulation.setDeviceMetricsOverride',{width:375,height:1100,deviceScaleFactor:1,mobile:true});
+        await evaluate('document.querySelector(".ip-batch-result").scrollIntoView()'); await snapshot('batch-suppression-mobile');
+        assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true);
+        await call('Emulation.setDeviceMetricsOverride',{width:1280,height:1100,deviceScaleFactor:1,mobile:false});
+      }
+    }
+    results.push('completed full and partial suppression preserve separate lifecycle, bounded reasons and absent observation/probe retry time without resubmission');
+
     await reset('all-failed'); await submit(['db-ip','egress-consistency']); await accepted(); await evaluate('fixture.expire(2000)'); await waitFor(includes('Task ended.')); await evaluate('document.querySelectorAll(".ip-batch-items details").forEach(d=>d.open=true)');
     await snapshot('batch-task-desktop'); await evaluate('fixture.locale("zh-CN")'); await waitFor(includes('批量 IP 质量任务'));
     for (const [width,height] of [[375,900],[768,700],[900,390]]) { await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width===375}); await pause(100); assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true,`${width} viewport overflow`); }

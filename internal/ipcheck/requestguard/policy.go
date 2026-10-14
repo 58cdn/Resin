@@ -1,6 +1,7 @@
 // Package requestguard provides an in-memory HTTP-attempt admission controller.
-// It is not connected to any production request path or configuration. Its
-// budget counts admitted attempts, not sent requests, dials or provider billing.
+// The builtin IP-quality engine integrates it through explicit default-off
+// configuration. Its budget counts admitted attempts, not sent requests, dials
+// or provider billing. The controller itself performs no I/O.
 package requestguard
 
 import (
@@ -90,7 +91,7 @@ func (r *Rejection) Error() string { return string(r.Reason) }
 
 // Outcome describes only circuit feedback. Every admitted attempt consumes its
 // budget permanently, including Neutral. HTTP/error classification belongs to a
-// future adapter, not this controller. Unknown values are treated as Neutral.
+// adapter, not this controller. Unknown values are treated as Neutral.
 type Outcome uint8
 
 const (

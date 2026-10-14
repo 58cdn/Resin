@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/Resinat/Resin/internal/ipcheck/requestguard"
 )
 
 const geoIPAttribution = "Offline GeoIP provider; DB-IP data, when configured, is licensed under CC BY 4.0 (https://db-ip.com/db/download/ip-to-country-lite)"
@@ -174,13 +176,29 @@ func publicSourceError(err error) string {
 // viaNodeTransport contains no independent direct-network fallback. The host
 // owns outbound acquisition, DNS validation, and dialing through this node.
 type viaNodeTransport struct {
-	host Host
-	hash CheckRequest
+	host   Host
+	hash   CheckRequest
+	guards *requestguard.Controller
+	source requestguard.Source
+	report *attemptReport
 }
 
 func (t viaNodeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := ValidateTarget(req.URL.String()); err != nil {
 		return nil, err
 	}
-	return t.host.DoViaNode(req.Context(), t.hash.NodeHash, req)
+	if t.guards == nil {
+		return t.host.DoViaNode(req.Context(), t.hash.NodeHash, req)
+	}
+	permit, err := t.guards.Admit(req.Context(), t.source)
+	if t.report != nil {
+		t.report.record(err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer permit.Finish(requestguard.Neutral)
+	response, err := t.host.DoViaNode(req.Context(), t.hash.NodeHash, req)
+	permit.Finish(guardOutcome(req.Context(), response, err))
+	return response, err
 }

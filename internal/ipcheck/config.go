@@ -31,6 +31,7 @@ type Config struct {
 	BackgroundNodes         []string                        `json:"background_nodes,omitempty"`
 	BackgroundSources       []string                        `json:"background_sources,omitempty"`
 	BackgroundInterval      string                          `json:"background_interval,omitempty"`
+	SourceGuards            []SourceGuardPolicy             `json:"source_guards,omitempty"`
 	MaxConcurrentChecks     int                             `json:"max_concurrent_checks"`
 	MaxCacheEntries         int                             `json:"max_cache_entries"`
 	SourcePriority          []string                        `json:"source_priority"`
@@ -123,7 +124,10 @@ func (cfg Config) Validate() error {
 	if err := validateOptionalTargets(cfg.CloudflareChallengeURLs, cfg.AIRegionTargets); err != nil {
 		return err
 	}
-	return cfg.validateBackground()
+	if err := cfg.validateBackground(); err != nil {
+		return err
+	}
+	return cfg.validateSourceGuards()
 }
 
 func (cfg Config) validateBackground() error {
