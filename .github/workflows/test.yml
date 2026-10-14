@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go and WebUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOMAXPROCS: "2"
+      GOFLAGS: -p=1
+      CGO_ENABLED: "1"
+      NODE_OPTIONS: --max-old-space-size=1536
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build WebUI for Go embed
+        working-directory: webui
+        run: |
+          npm ci --no-audit --no-fund --maxsockets=2
+          npm test
+          npm run build
+      - name: Show toolchain
+        run: |
+          go version
+          go env GOOS GOARCH CC CGO_ENABLED
+          gcc --version
+      - name: Test
+        run: go test ./... -count=1 -timeout=180s
+      - name: Race
+        run: go test -race ./... -count=1 -timeout=180s
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
