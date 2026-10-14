@@ -129,6 +129,9 @@ func NewServerWithAddress(
 		authed.Handle("POST /api/v1/ip-checks/lookup", HandleLookupIPCheck(cp))
 		authed.Handle("GET /api/v1/ip-checks/sources", HandleListIPCheckSources(cp))
 		authed.Handle("POST /api/v1/ip-checks/cache/nodes", HandleGetNodeIPCheckBatch(cp))
+		authed.Handle("POST /api/v1/ip-checks/actions/check-batch", HandleSubmitIPCheckBatch(cp))
+		authed.Handle("GET /api/v1/ip-checks/tasks/{id}", HandleGetIPCheckBatch(cp))
+		authed.Handle("POST /api/v1/ip-checks/tasks/{id}/actions/cancel", HandleCancelIPCheckBatch(cp))
 
 		// GeoIP.
 		authed.Handle("GET /api/v1/geoip/status", HandleGeoIPStatus(cp))
