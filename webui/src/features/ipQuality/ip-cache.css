@@ -1,0 +1,27 @@
+.ip-cache-page { max-width: 1080px; min-width: 0; }
+.ip-cache-back { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--primary-strong); text-decoration: underline; }
+.ip-cache-card { display: flex; flex-direction: column; gap: 24px; }
+.ip-cache-card form label { display: block; margin-bottom: 8px; font-weight: 600; }
+.ip-cache-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.ip-cache-controls .input { flex: 1 1 250px; width: 100%; min-width: 0; min-height: 44px; font-size: 16px; }
+.ip-cache-controls .btn { min-height: 44px; }
+.ip-cache-controls .btn-primary { background: var(--primary-strong); }
+.ip-cache-help { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin-top: 8px; max-width: 75ch; }
+.ip-cache-input-error { color: var(--danger); margin-top: 8px; }
+.ip-cache-status { border-left: 3px solid var(--primary-strong); padding: 12px 16px; background: var(--bg); min-height: 72px; overflow-wrap: anywhere; }
+.ip-cache-address { font-weight: 600; margin-bottom: 8px; }
+.ip-cache-result { min-width: 0; overflow-wrap: anywhere; }
+.ip-cache-result h3 { font-size: 16px; }
+.ip-cache-result .ip-quality-facts { gap: 16px 24px; margin: 24px 0; }
+.ip-cache-result .ip-quality-source summary, .ip-cache-result .ip-quality-catalog > summary { min-height: 44px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.ip-cache-result .ip-quality-source pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.ip-cache-back:focus-visible, .ip-cache-card summary:focus-visible, .ip-cache-controls .btn:focus-visible, .ip-cache-controls .input:focus-visible { outline: 2px solid var(--primary-strong); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .ip-cache-controls .btn { transition: none; }
+  .ip-cache-controls .btn:hover:enabled { transform: none; }
+}
+@media (max-width: 600px) {
+  .ip-cache-controls .input { flex-basis: 100%; }
+  .ip-cache-controls .btn { flex: 1; }
+  .ip-cache-result .ip-quality-facts { grid-template-columns: 1fr; }
+}

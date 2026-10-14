@@ -33,6 +33,7 @@ type RequestOptions = {
   auth?: boolean;
   token?: string;
   signal?: AbortSignal;
+  cache?: RequestCache;
 };
 
 function buildURL(path: string): string {
@@ -56,7 +57,7 @@ async function parseErrorBody(response: Response): Promise<ApiErrorBody | null> 
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, rawBody, auth = true, token, signal } = options;
+  const { method = "GET", body, rawBody, auth = true, token, signal, cache } = options;
   const headers = new Headers();
 
   if (rawBody !== undefined) {
@@ -77,6 +78,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers,
     body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
     signal,
+    cache,
   });
 
   if (!response.ok) {

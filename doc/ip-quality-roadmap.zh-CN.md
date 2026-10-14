@@ -1,6 +1,6 @@
 # IP 质量能力路线图与验收记录
 
-验证快照：2026-10-14，PR12–15 已合并且最终 master CI 已通过；本列表切片保持独立草稿。最新 HEAD 与 CI 状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
+验证快照：2026-10-14，PR12–15、PR17 已合并；本 by-IP 缓存页 PR18 已同步到 PR17 合并后的实际 master。最终 CI 与合并状态以各 PR 描述为准；早期提案中的「仅含文档」不是当前状态。
 
 本 fork 未启用 Issues，本轮只用仓库文档与 PR 跟踪，不修改仓库设置。P1 已通过 [PR1](https://github.com/58cdn/Resin/pull/1) 合并；PR2–11 已合并，不重复开发。P2–P4 尚未全部完成。
 
@@ -12,28 +12,29 @@
 | [PR12](https://github.com/58cdn/Resin/pull/12) | `c0ea4155847dd3b6e61125d41d7aae79e6dfbb07` | 07:16:01 UTC 已合并；Windows reset 修复与 lease 测试时钟修正；[临时辅助 PR 的准确候选 CI 38525264468](https://github.com/58cdn/Resin/actions/runs/38525264468) 双平台通过，辅助 PR16 已关闭且未合并 |
 | [PR13](https://github.com/58cdn/Resin/pull/13) | `4bb9188eb966d873174f54f5368be20d4603a4d8` | 07:36:48 UTC 已合并；[最终自身 CI 38527442777](https://github.com/58cdn/Resin/actions/runs/38527442777) 双平台通过；合并后 Windows 暴露 metrics 测试跨秒缺陷，修复见 PR14 |
 | [PR14](https://github.com/58cdn/Resin/pull/14) | `590ab517cbb346f769ebe4563685ad4afc67b7ed` | 08:15:01 UTC 已合并；节点详情面板与 metrics 测试修复；[最终自身 CI 38531553063](https://github.com/58cdn/Resin/actions/runs/38531553063) 双平台 test/race/build/vet、4 项前端测试及构建通过；另有 14 项本地 mock 浏览器检查 |
-| [PR15](https://github.com/58cdn/Resin/pull/15) | `def0caddb9bc6db90b88504a3e4f7274adf31595` | 08:39:50 UTC 已合并；[批量缓存 API](ip-quality-batch-cache.zh-CN.md)；[最终自身 CI 38534451747](https://github.com/58cdn/Resin/actions/runs/38534451747) 及 [实际 master CI 38536711116](https://github.com/58cdn/Resin/actions/runs/38536711116) 双平台全量检查通过 |
-| 当前列表缓存切片 | 基础为实际 master `def0caddb9bc6db90b88504a3e4f7274adf31595` | [手动列表读取与徽标](ip-quality-list-cache.zh-CN.md)，独立草稿；复用已合并面板与 API，新增实现的最终 HEAD、自身 CI 和浏览器证据见本 PR 描述 |
+| [PR15](https://github.com/58cdn/Resin/pull/15) | `def0caddb9bc6db90b88504a3e4f7274adf31595` | 已合并；[批量缓存 API](ip-quality-batch-cache.zh-CN.md)；最终自身 CI 38534451747 与 [实际 master CI 38536711116](https://github.com/58cdn/Resin/actions/runs/38536711116) 双平台通过 |
+| [PR17](https://github.com/58cdn/Resin/pull/17) | `fbe76a6d0c2a17772a874381dcafbe7c56630ced` | 10:41:09 UTC 已合并；列表缓存 UI，独立复审与 [自身 CI 38540128111](https://github.com/58cdn/Resin/actions/runs/38540128111) 通过；[实际 master CI 38551296373](https://github.com/58cdn/Resin/actions/runs/38551296373) 以运行结果为准 |
+| [PR18](https://github.com/58cdn/Resin/pull/18) | 基础为实际 master `fbe76a6d0c2a17772a874381dcafbe7c56630ced` | [独立只读页面](ip-quality-byip-cache.zh-CN.md)；组合后的独立复审、20 项前端单测及两套各 18 组浏览器检查通过；自身最终 CI 与合并结果记录在 PR 描述，不预称合并或部署 |
 
-每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15 已按顺序完成；本列表 UI 已同步实际 master，须取得自身最终检查并在 PR 描述记录结果，不能借用前置 PR 的结果。它不在上述四个 PR 的合并授权内，保持草稿。
+每次合并均重新核对实际 base/head、准确候选及最终树，不以旧 merge ref 的成功替代新代码验证。PR12→PR13→PR14→PR15→PR17 已按顺序完成；PR18 同步到已合并列表 UI 的实际基线，修复组合后重复的共享翻译键，并保留两套浏览器检查。用户已授权通过最终检查后自动合并；实际合并仍以远端结果为准。
 
 [PR13 合并后 CI 38529466438](https://github.com/58cdn/Resin/actions/runs/38529466438) 的 Windows 失败保留为失败记录：一秒桶在数据库恢复期间合法新增空桶，测试却查询全部时间并假定只有一行。延迟 overlay 已复现；PR14 只修改测试，按原桶时间严格验证并确定性检查新空桶，100 次目标测试、20 次 metrics 全包 race 及最终双平台 CI 通过。没有修改生产逻辑、放宽断言或跳过检查。
-
-修复后的 [PR14 master CI 38533779961](https://github.com/58cdn/Resin/actions/runs/38533779961) 于 08:32:06 UTC 成功；PR15 实际 master CI 于 08:53:24 UTC 成功。两平台各 21 包 test、21 包 race、4 项前端测试及全部构建/vet 通过。合并和 CI 不代表部署或真实节点验证。
 
 ## 切片顺序与剩余验收
 
 | 顺序 | 范围 | 当前状态 | 进入下一步的依据 |
 | --- | --- | --- | --- |
 | 1 | 节点详情缓存、来源错误与状态、中英文 | PR14 已合并 | 最终自身双平台 CI 和受控浏览器检查通过 |
-| 2 | 节点缓存批量读取 API | PR15 已合并；50 项上限、规范化去重、限流、取消、逐项失败、原始来源和 unknown | fake host 验证不发检测请求；最终自身与 master 双平台测试通过 |
-| 3（本轮） | 节点列表紧凑徽标 | 当前草稿已实现：点击读取本页、进度与取消、部分失败、过期与出口变更失效、详情入口 | 只读批量契约，每批最多 50、串行间隔 600ms；最终 mock 浏览器与自身双平台 CI 见本 PR |
-| 4 | by-IP 缓存页面、显式单次检测控件 | 未实现；P1 已有单次 API | 清楚区分读缓存和发起检测；展示目标/请求范围及逐来源错误；真实验证另行确认节点与目标 |
+| 2 | 节点缓存批量读取 API | PR15 已合并；50 项上限、规范化去重、限流、取消、逐项失败、原始来源和 unknown | fake host 和最终双平台 CI 通过；不发检测请求 |
+| 3 | 节点列表紧凑徽标 | PR17 已合并 | 批量只读契约避免每行请求；进度/取消、过期/出口变更和 unknown |
+| 4a（本轮） | by-IP 只读缓存页面 | PR18 已实现并同步到实际 master；仅复用已合并 GET | IPv4/IPv6/非法输入、404 模糊语义、来源失败、过期、取消/导航/晚到响应、键盘及移动布局；自身证据见 PR |
+| 4b | 显式单次检测控件 | 未实现；P1 已有单次 API | 与缓存读取明确区分，展示目标/请求范围及逐来源错误；真实验证另行确认节点与目标 |
 | 5 | 批量检测 API、任务进度与取消 | 未实现；本轮只读 API 不等同于批量检测 | 有界队列和并发、重复任务合并、每项终态、停止后不继续调度、缓存/force 规则；先用合成数据验收 |
 | 6 | 默认关闭的后台周期检测 | 未实现；`background_enabled:true` 继续被拒绝 | 显式启用、禁用/重配置/进程停止取消、重启恢复规则、避免重叠调度；与批量任务共用可靠生命周期 |
 | 7 | 每来源 QPS、日配额与熔断 | 未实现 | 明确配额时区/重置、429/超时退避、预算预留/归还、半开与失败类型；不能把当前批量读取限流当作 source 配额 |
 | 8 | Scamalytics / ipdata / Radar 等来源 | 未实现；不读取或创建密钥 | 核实官方接口、许可、字段、配额、凭据输入与脱敏；先做固定响应和传输 mock |
 | 9 | 可公开审查、配置和测试的风险评分 | 未实现；`risk_level` 保持 unknown | 先有可追溯的规则、阈值依据及版本；保留原始来源、冲突和缺失，不能把缺数据、0 或无标记判成低风险 |
+| 9b | IP 检测专用指标 | 原提案第 6/7 节既有需求，本次补回待办；未实现 | 独立统计 IP 检测连接/结果，不混入 egress/latency；先定义事件、去重/缓存命中与取消计数口径，再独立实现验收。既有 metrics 测试修复不等于本能力 |
 | 10 | P3 Platform / 节点质量过滤 | 未实现 | P2 结果语义可靠后另立切片；`unknown_action` 默认 allow，只在冷路径重建，热路径不查库/联网 |
 | 11 | P4 DNS leak / 自建权威 DNS / 外部 capability | 未实现 | 独立需求、威胁模型、协议和授权调研；不能借 UI 或缓存工作启动外部探测 |
 

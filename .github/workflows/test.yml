@@ -47,6 +47,7 @@ jobs:
           npm ci --no-audit --no-fund --maxsockets=2
           npm test
           npm run test:browser
+          npm run test:browser:byip
           npm run build
       - name: Show toolchain
         run: |
