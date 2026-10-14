@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:browser": "node tests/ip-quality-list-browser.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
