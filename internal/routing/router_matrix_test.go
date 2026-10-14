@@ -275,16 +275,22 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 		return NewPlatformRoutingState(), false
 	})
 
-	oldExpiry := time.Now().Add(time.Hour).UnixNano()
+	// Use a live, partially consumed lease. Two successive time.Now calls can
+	// return the same tick, so a just-created old lease need not differ in expiry.
+	oldCreated := time.Now().Add(-30 * time.Minute)
+	oldExpiry := oldCreated.Add(time.Duration(plat.StickyTTLNs)).UnixNano()
 	oldLease := Lease{
 		NodeHash:       currentHash,
 		EgressIP:       currentEntry.GetEgressIP(),
+		CreatedAtNs:    oldCreated.UnixNano(),
 		ExpiryNs:       oldExpiry,
 		LastAccessedNs: time.Now().UnixNano(),
 	}
 	state.Leases.CreateLease("acct-miss", oldLease)
 
+	beforeRoute := time.Now().UnixNano()
 	res, err := router.RouteRequest(plat.Name, "acct-miss", "https://example.com")
+	afterRoute := time.Now().UnixNano()
 	if err != nil {
 		t.Fatalf("route failed: %v", err)
 	}
@@ -302,8 +308,17 @@ func TestRouteRequest_SameIPRotationMissRecreatesLease(t *testing.T) {
 	if newLease.NodeHash != replacementHash {
 		t.Fatalf("lease node not updated: got=%s want=%s", newLease.NodeHash.Hex(), replacementHash.Hex())
 	}
-	if newLease.ExpiryNs == oldExpiry {
-		t.Fatalf("recreated lease must have new expiry, still got old %d", oldExpiry)
+	if newLease.CreatedAtNs < beforeRoute || newLease.CreatedAtNs > afterRoute {
+		t.Fatalf("creation time %d is outside routing interval [%d, %d]", newLease.CreatedAtNs, beforeRoute, afterRoute)
+	}
+	if got := newLease.ExpiryNs - newLease.CreatedAtNs; got != plat.StickyTTLNs {
+		t.Fatalf("recreated lease TTL = %d, want %d", got, plat.StickyTTLNs)
+	}
+	if newLease.LastAccessedNs != newLease.CreatedAtNs {
+		t.Fatalf("last accessed = %d, want creation time %d", newLease.LastAccessedNs, newLease.CreatedAtNs)
+	}
+	if newLease.ExpiryNs <= oldExpiry {
+		t.Fatalf("recreated lease expiry %d must extend old expiry %d", newLease.ExpiryNs, oldExpiry)
 	}
 	if got := state.IPLoadStats.Get(oldLease.EgressIP); got != 0 {
 		t.Fatalf("old egress ip load should be 0, got %d", got)

@@ -122,6 +122,7 @@ func extractErrnoCode(err error) string {
 }
 
 func normalizeErrno(errno syscall.Errno) string {
+	errno = normalizeSocketErrno(errno)
 	switch errno {
 	case syscall.ECONNREFUSED:
 		return "ECONNREFUSED"
@@ -169,8 +170,31 @@ func isClientReadResetError(err error) bool {
 		return false
 	}
 
-	switch extractErrnoCode(err) {
-	case "ECONNRESET", "ECONNABORTED":
+	// TCPConn.WriteTo/ReadFrom wrap the actual socket operation. A reset on
+	// the upstream write must not be mistaken for a client read failure.
+	var socketOp string
+	for wrapped := err; wrapped != nil; {
+		var opErr *net.OpError
+		if !errors.As(wrapped, &opErr) {
+			break
+		}
+		socketOp = opErr.Op
+		wrapped = opErr.Err
+	}
+	if socketOp == "write" {
+		return false
+	}
+	if socketOp == "read" {
+		switch extractErrnoCode(err) {
+		case "ECONNRESET", "ECONNABORTED":
+			return true
+		}
+	}
+
+	// Preserve the existing POSIX/text fallback for opaque copy errors (Linux
+	// splice does not report read vs write). Newly recognized Winsock errors
+	// require the explicit read operation above before they can be exempted.
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
 		return true
 	}
 
