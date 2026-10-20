@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
-const { spawn } = require('node:child_process');
+const { launchChrome } = require('./chrome-launcher.cjs');
 const assert = require('node:assert/strict');
 const esbuild = require('esbuild');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -26,16 +26,10 @@ async function main() {
     res.end(fs.readFileSync(file));
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${path.join(output, 'profile')}`, 'about:blank'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-  let stderr = '', spawnError;
-  browser.on('error', error => { spawnError = error; });
-  browser.stderr.on('data', chunk => { stderr += chunk; });
+  const { browser, ready } = launchChrome(chrome, path.join(output, 'profile'));
   let socket, command;
   try {
-    for (let i = 0; i < 150 && !/DevTools listening on (ws:\/\/[^\s]+)/.test(stderr) && !spawnError; i++) await pause(100);
-    if (spawnError) throw spawnError;
-    const endpoint = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/)?.[1];
-    assert.ok(endpoint, 'Chrome DevTools did not start: ' + stderr.slice(-1000));
+    const endpoint = await ready;
     socket = new WebSocket(endpoint);
     await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
     let sequence = 0;
